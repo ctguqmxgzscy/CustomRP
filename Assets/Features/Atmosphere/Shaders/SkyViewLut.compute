@@ -27,7 +27,7 @@
 #define LUT_WIDTH  512
 #define LUT_HEIGHT 256
 
-Texture2D<float2> _OpticalDepthLUT;
+Texture2D<float4> _OpticalDepthLUT;
 SamplerState sampler_OpticalDepthLUT;
 
 Texture2D<float4> _MultiScatteringLUT;
@@ -69,6 +69,7 @@ void ComputeSkyViewLut(uint3 id : SV_DispatchThreadID)
     float3 scatter = float3(0, 0, 0);
     float tauPA_R = 0.0;
     float tauPA_M = 0.0;
+    float tauPA_O = 0.0;
     float time = 0.0;
     float ds = rayLength / _ViewSamples;
 
@@ -83,7 +84,9 @@ void ComputeSkyViewLut(uint3 id : SV_DispatchThreadID)
         // PA transmittance
         tauPA_R += exp(-height / _ScaleHeight) * ds;
         tauPA_M += exp(-height / scaleHeightM) * ds;
-        float3 T_PA = exp(-kRayleighScattering * tauPA_R - kMieScattering * tauPA_M);
+        tauPA_O += GetOzoneDensity(height) * ds;
+        float3 T_PA = exp(-kRayleighScattering * tauPA_R - kMieScattering * tauPA_M
+                          - kOzoneAbsorption * tauPA_O);
 
         // CP transmittance — with Bruneton horizon smoothstep
         float cosSunZenith = dot(normalize(P - planetCenter), sunDir);

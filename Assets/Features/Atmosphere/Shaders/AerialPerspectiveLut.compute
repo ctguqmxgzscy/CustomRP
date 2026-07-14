@@ -20,10 +20,14 @@
 #define ATM_MULTI_SCATTERING
 
 // ── Input textures ──────────────────────────────────────────────────────
-Texture2D<float2> _OpticalDepthLUT;
+Texture2D<float4> _OpticalDepthLUT;
 SamplerState sampler_OpticalDepthLUT;
 Texture2D<float4> _MultiScatteringLUT;
 SamplerState sampler_MultiScatteringLUT;
+
+// ── Camera matrices ─────────────────────────────────────────────────────
+float4x4 _InvProjectionMatrix;
+float4x4 _InvCameraViewMatrix;
 
 // ── Output ──────────────────────────────────────────────────────────────
 RWTexture3D<float4> _AerialPerspectiveLUT;
@@ -123,7 +127,8 @@ void ComputeAerialPerspectiveLUT(uint3 id : SV_DispatchThreadID)
         float height = length(P - planetCenter) - _PlanetRadius;
 
         float3 extinction = kRayleighScattering * exp(-height / _ScaleHeight)
-            + kMieScattering * exp(-height / _MieScaleHeight);
+            + kMieScattering * exp(-height / _MieScaleHeight)
+            + kOzoneAbsorption  * GetOzoneDensity(height);
 
         const float3 sampleOpticalDepth = extinction * dt;
         const float3 sampleT = exp(-sampleOpticalDepth);

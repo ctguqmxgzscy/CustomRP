@@ -15,11 +15,12 @@ MonoBehaviour:
   planetRadius: 6360000
   atmosphereHeight: 60000
   scaleHeight: 8000
-  mieG: 0.88
+  mieG: 0.8
   mieScaleHeight: 1200
-  sunIntensity: 6
+  sunIntensity: 7
   sunDiskAngle: 1.5
   sunLightColor: {r: 1, g: 1, b: 1, a: 1}
+  enableTerrainShadow: 1
   apIntensity: 10
   viewSamples: 64
   lightSamples: 32

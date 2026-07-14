@@ -1,13 +1,21 @@
 // Optical Depth LUT Generator — Compute Shader
 // Precomputes a 2D optical depth LUT for atmospheric scattering.
 // LUT axes: U = cos(sun zenith), V = height
-// Stored as RG16 (R = τ_Rayleigh, G = τ_Mie). Occluded rays store 1e20 → exp(-β·1e20) ≈ 0.
-// Transmittance T = exp(-β·τ) is computed at runtime by SampleTransmittanceLUT().
+// Stored as ARGBHalf:
+//   R = τ_Rayleigh, G = τ_Mie, B = τ_Ozone
+//   A = unused
+// Occluded rays store 1e20 → exp(-β·1e20) ≈ 0.
+// Transmittance T = exp(-β_R·τ_R - β_M·τ_M - β_O·τ_O) computed by SampleTransmittanceLUT().
 
 #pragma only_renderers d3d11 vulkan metal
 
 #pragma kernel ComputeOpticalDepthLUT
 #include "Assets/Shaders/ShaderLibrary/MathHelper.hlsl"
+
+// Ozone layer profile (duplicated from Scattering.hlsl — this compute
+// shader does not include the full Atmosphere/Scattering chain)
+#define OZONE_CENTER_HEIGHT 25000.0
+#define OZONE_HALF_WIDTH     8000.0
 
 #ifndef COORD_TEXTURE2D_X
 #define COORD_TEXTURE2D_X(pixelCoord)  pixelCoord
@@ -21,7 +29,7 @@
 
 #define LUT_SIZE 256
 
-RW_TEXTURE2D_X(float2, _OpticalDepthLUT);
+RW_TEXTURE2D_X(float4, _OpticalDepthLUT);
 
 float _PlanetRadius;
 float _AtmosphereRadius;
@@ -31,10 +39,10 @@ float _LightSamples;
 float _InvLUTSize; // 1.0 / LUT_SIZE
 
 // ── Optical Depth from P to atmosphere exit along sunDir ──────────────
-// Returns float2(tauR, tauM).
-// Returns float2(1e20, 1e20) if the ray hits the planet (occluded) —
+// Returns float3(tauR, tauM, tauO).
+// Returns float3(1e20, 1e20, 1e20) if the ray hits the planet (occluded) —
 // exp(-beta * 1e20) ≈ 0, bilinear-interpolation friendly.
-float2 ComputeOpticalDepthToAtmTop(
+float3 ComputeOpticalDepthToAtmTop(
     float3 P, float3 sunDir,
     float3 planetCenter,
     float planetRadius, float atmosphereRadius,
@@ -46,7 +54,7 @@ float2 ComputeOpticalDepthToAtmTop(
     // Planet occlusion: if ray hits planet in forward direction, sun is blocked
     float2 intersection = RaySphereIntersection(P, sunDir, planetCenter, planetRadius);
     if (intersection.x > 0.0)
-        return float2(1e20, 1e20);
+        return float3(1e20, 1e20, 1e20);
 
     // Ray to atmosphere exit
     intersection = RaySphereIntersection(P, sunDir, planetCenter, atmosphereRadius);
@@ -55,17 +63,21 @@ float2 ComputeOpticalDepthToAtmTop(
     // Compute optical depth along the ray
     float3 step = (rayEnd - P) / float(sampleCount);
     float stepSize = length(step);
-    float2 density = 0;
+    float2 densityRM = float2(0, 0);
+    float  densityO  = 0.0;
 
     for (float s = 0.5; s < float(sampleCount); s += 1.0)
     {
         float3 position = P + step * s;
         float height = abs(length(position - planetCenter) - planetRadius);
-        float2 localDensity = exp(-height / densityScaleHeight);
-        density += localDensity * stepSize;
+        densityRM += exp(-height / densityScaleHeight) * stepSize;
+
+        // Ozone: gaussian profile centered at ~25 km
+        float z = (height - OZONE_CENTER_HEIGHT) / OZONE_HALF_WIDTH;
+        densityO += exp(-z * z) * stepSize;
     }
 
-    return density;
+    return float3(densityRM.x, densityRM.y, densityO);
 }
 
 // ── Main Kernel ───────────────────────────────────────────────────────
@@ -103,11 +115,11 @@ void ComputeOpticalDepthLUT(uint3 id : SV_DispatchThreadID)
 
     float scaleHeightM = _MieScaleHeight;
 
-    float2 tau = ComputeOpticalDepthToAtmTop(
+    float3 tau = ComputeOpticalDepthToAtmTop(
         P, sunDir, planetCenter,
         _PlanetRadius, _AtmosphereRadius,
         _ScaleHeight, scaleHeightM,
         (int)_LightSamples);
 
-    _OpticalDepthLUT[id.xy] = tau;
+    _OpticalDepthLUT[id.xy] = float4(tau, 0.0);
 }

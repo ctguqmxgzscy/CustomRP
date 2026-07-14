@@ -34,7 +34,7 @@
 #define NUM_STEPS 32
 
 
-Texture2D<float2> _OpticalDepthLUT;
+Texture2D<float4> _OpticalDepthLUT;
 SamplerState sampler_OpticalDepthLUT;
 
 RW_TEXTURE2D_X(float4, _MultiScatteringLUT);

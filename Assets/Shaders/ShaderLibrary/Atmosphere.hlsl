@@ -8,7 +8,7 @@
 // Expected globals (declare in caller before #include):
 //   float _PlanetRadius, _AtmosphereHeight, _ScaleHeight, _MieScaleHeight, _MieG
 //   float _SunDiskAngle                               (for GetTransmittanceToSun)
-//   Texture2D<float2> _OpticalDepthLUT                (for LUT sampling)
+//   Texture2D<float4> _OpticalDepthLUT                (for LUT sampling)
 //   SamplerState      sampler_OpticalDepthLUT
 //   Texture2D<float4> _MultiScatteringLUT              (optional, for GetMultiScattering)
 //   SamplerState      sampler_MultiScatteringLUT        (optional)
@@ -37,8 +37,6 @@ float _SunIntensity;
 float _SunDiskAngle;
 float3 _SunDirection;
 float3 _SunLightColor;
-float4x4 _InvProjectionMatrix;
-float4x4 _InvCameraViewMatrix;
 float _AtmosphereHeight;
 float _ViewSamples;
 float _CameraHeight; // distance from planet center to camera minus planet radius
@@ -48,13 +46,23 @@ float _CameraHeight; // distance from planet center to camera minus planet radiu
 // Reads _OpticalDepthLUT with axes (cosSunZenith, height / _AtmosphereHeight).
 // Uses kRayleighScattering & kMieScattering from Scattering.hlsl.
 // ═════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════
+// Ozone Density — Gaussian profile centered at ~25 km
+// ═════════════════════════════════════════════════════════════════════════
+float GetOzoneDensity(float height)
+{
+    float z = (height - OZONE_CENTER_HEIGHT) / OZONE_HALF_WIDTH;
+    return exp(-z * z);
+}
+
 float3 SampleTransmittanceLUT(float height, float cosSunZenith)
 {
     float maxHeight = _AtmosphereHeight;
     float2 uv = float2(saturate(cosSunZenith * 0.5 + 0.5),
                        saturate(height / maxHeight));
-    float2 tau = _OpticalDepthLUT.SampleLevel(sampler_OpticalDepthLUT, uv, 0).rg;
-    return exp(-kRayleighScattering * tau.r - kMieScattering * tau.g);
+    float4 tau = _OpticalDepthLUT.SampleLevel(sampler_OpticalDepthLUT, uv, 0);
+    return exp(-kRayleighScattering * tau.r - kMieScattering * tau.g
+               - kOzoneAbsorption * tau.b);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -114,7 +122,8 @@ float3 ExtinctionCoefAtHeight(float height)
     float densityR = exp(-height / _ScaleHeight);
     float densityM = exp(-height / _MieScaleHeight);
     static const float3 kMieAbsorption = float3(4.4e-6, 4.4e-6, 4.4e-6);
-    return kRayleighScattering * densityR + (kMieScattering + kMieAbsorption) * densityM;
+    return kRayleighScattering * densityR + (kMieScattering + kMieAbsorption) * densityM
+           + kOzoneAbsorption * GetOzoneDensity(height);
 }
 
 // ═════════════════════════════════════════════════════════════════════════

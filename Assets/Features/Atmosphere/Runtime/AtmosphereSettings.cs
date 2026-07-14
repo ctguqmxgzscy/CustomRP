@@ -40,6 +40,9 @@ public class AtmosphereSettings : ScriptableObject
     public Color sunLightColor = Color.white;
 
     [Header("Aerial Perspective")]
+    [Tooltip("Enable per-pixel ray-march with URP shadowmap for terrain occlusion.")]
+    public bool enableTerrainShadow = false;
+
     [Tooltip("Multiplier for aerial perspective inscattered light. 1 = physically correct, >1 = stronger haze.")]
     [Range(0f, 10f)]
     public float apIntensity = 1.0f;

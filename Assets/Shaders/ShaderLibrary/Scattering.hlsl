@@ -26,6 +26,25 @@ static const float3 kRayleighScattering = float3(5.8e-6, 1.35e-5, 3.31e-5); // R
 // Altitude: β_M(h) = kMieScattering · exp(-h / H_M),  H_M ≈ 1.2 km.
 static const float3 kMieScattering = float3(3.99e-6, 3.99e-6, 3.99e-6); // R, G, B [m⁻¹]
 
+// ── Ozone Absorption (Chappuis band) ─────────────────────────────────────
+// Ozone absorbs green-yellow light (500–650 nm), reddening sunsets.
+// Unlike Rayleigh/Mie, ozone is a pure absorber (no scattering) and
+// concentrates in the stratosphere around 25 km.
+//
+// Profile: Gaussian centered at 25 km, half-width ~8 km.
+// Absorption coefficient at peak density, in m⁻¹.
+//
+// Ozone absorption peaks at low sun angles (long slant path through
+// stratosphere) and is nearly invisible at noon (short vertical path).
+// G absorbs green-yellow, R and B are negligible — Rayleigh handles blue.
+//
+// Vertical optical depth at peak ≈ k · √π · halfWidth ≈ 0.06 (subtle at noon)
+// Horizon slant path ~20× longer → OD ≈ 1.2 → deep red at sunset.
+static const float3 kOzoneAbsorption = float3(0.05e-6, 10.0e-6, 0.01e-6);
+
+#define OZONE_CENTER_HEIGHT 25000.0
+#define OZONE_HALF_WIDTH     8000.0
+
 // Ray-Sphere Intersection (Alan Zucconi)
 // Reference: https://www.alanzucconi.com/2017/10/10/atmospheric-scattering-6/
 //

@@ -94,6 +94,7 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
         else if (m_CompositePass != null && m_CompositePass.compositeMaterial != null
                                          && m_EnableAerialPerspective)
         {
+            m_CompositePass.enableTerrainShadow = m_Settings.enableTerrainShadow;
             renderer.EnqueuePass(m_CompositePass);
         }
     }
@@ -123,7 +124,7 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
 
         // ── RTHandle descriptors ─────────────────────────────────────────
         private static readonly RenderTextureDescriptor s_OpticalDepthLutDesc = new(
-            k_OpticalDepthLutSize, k_OpticalDepthLutSize, RenderTextureFormat.RGHalf)
+            k_OpticalDepthLutSize, k_OpticalDepthLutSize, RenderTextureFormat.ARGBHalf)
         {
             enableRandomWrite = true, sRGB = false
         };
@@ -357,7 +358,8 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             //    near slices = 2 steps, far slices = 128 steps.
             //    Squared depth distribution for near-field precision.
             // ══════════════════════════════════════════════════════════════
-            if (enableAerialPerspective && aerialPerspectiveLutCompute != null)
+            if (enableAerialPerspective && aerialPerspectiveLutCompute != null
+                && !settings.enableTerrainShadow)
             {
                 var ap = aerialPerspectiveLutCompute;
 
@@ -412,10 +414,13 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             cmd.SetGlobalFloat(s_AtmosphereHeightId, atmosphereHeight);
             cmd.SetGlobalFloat(s_AtmosphereRadiusId, atmosphereRadius);
             cmd.SetGlobalFloat(s_MieScaleHeightId, mieScaleHeight);
+            cmd.SetGlobalFloat(s_ScaleHeightId, scaleHeight);
+            cmd.SetGlobalFloat(s_MieGId, mieG);
             cmd.SetGlobalFloat(s_SunDiskAngleId, sunDiskAngle);
             cmd.SetGlobalFloat(s_SunIntensityId, sunIntensity);
             cmd.SetGlobalFloat(s_APIntensityId, apIntensity);
             cmd.SetGlobalColor(s_SunLightColorId, sunLightColor);
+            cmd.SetGlobalVector(s_SunDirectionId, sunDir);
             cmd.SetGlobalFloat(s_zFarPropId, 100000f);
 
             context.ExecuteCommandBuffer(cmd);
@@ -439,9 +444,11 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
         private static readonly int s_BlitTextureId = Shader.PropertyToID("_BlitTexture");
         private static readonly int s_BlitScaleBiasId = Shader.PropertyToID("_BlitScaleBias");
         private static readonly int s_DebugModeId = Shader.PropertyToID("_DebugMode");
+        private static readonly int s_EnableTerrainShadowId = Shader.PropertyToID("_EnableTerrainShadow");
         private static readonly MaterialPropertyBlock s_PropertyBlock = new();
 
         public Material compositeMaterial;
+        public bool enableTerrainShadow;
         private RTHandle m_CopiedColor;
 
         public AerialPerspectiveCompositePass()
@@ -478,6 +485,13 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
 
             // Ensure debug mode is off during normal composite
             cmd.SetGlobalInt(s_DebugModeId, 0);
+
+            // Toggle between LUT mode (fast) and ray-march mode (terrain-aware)
+            if (enableTerrainShadow)
+                compositeMaterial.EnableKeyword("SHADOWMAP_ENABLED");
+            else
+                compositeMaterial.DisableKeyword("SHADOWMAP_ENABLED");
+            cmd.SetGlobalFloat(s_EnableTerrainShadowId, enableTerrainShadow ? 1.0f : 0.0f);
 
             // 1. Copy camera color to temp RT (avoids read-write hazard)
             CoreUtils.SetRenderTarget(cmd, m_CopiedColor);

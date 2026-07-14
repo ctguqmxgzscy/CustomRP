@@ -2,56 +2,37 @@ using UnityEngine;
 
 /// <summary>
 /// Runtime controller for testing atmospheric scattering.
-/// Place on the Camera. Uses a Directional Light as the sun.
+/// Place on the Camera. References a Directional Light as the sun.
 ///
 /// Controls:
-///   Right-drag          — rotate camera (pitch / yaw)
-///   Shift + Right-drag  — move sun (azimuth / elevation)
-///   Scroll wheel        — change camera altitude
-///   WASD                — move camera along surface
-///   1/2/3/4             — sun presets (noon / sunrise / sunset / below horizon)
-///   Space               — reset to defaults
+///   Left-drag            — rotate sun (azimuth / elevation)
+///   Right-drag           — rotate camera (pitch / yaw)
+///   Scroll wheel         — camera altitude (velocity)
+///   WASD                 — move camera (velocity, world-space)
+///   Q / E                — move camera down / up
+///   1/2/3/4              — sun presets (noon / sunrise / sunset / night)
+///   Space                — reset camera position to initial
 /// </summary>
 public class AtmosphereTestController : MonoBehaviour
 {
-    [Header("Camera")]
-    [Tooltip("Altitude above planet surface (meters).")]
-    [Range(0f, 100000f)]
-    public float altitude = 1000f;
-
-    [Tooltip("Latitude on planet surface (degrees). 0 = equator.")]
-    [Range(-89f, 89f)]
-    public float latitude = 0f;
-
-    [Tooltip("Longitude on planet surface (degrees).")]
-    [Range(-180f, 180f)]
-    public float longitude = 0f;
-
-    [Tooltip("Camera pitch relative to horizon. 0 = horizontal, 90 = straight up.")]
-    [Range(-30f, 90f)]
-    public float pitch = 0f;
-
-    [Tooltip("Camera yaw (world-space, degrees). 0 = +Z, 90 = +X.")]
-    [Range(0f, 360f)]
-    public float yaw = 180f;
-
     [Header("Sun")]
-    [Tooltip("Sun azimuth on the horizon plane (degrees). 0 = north, 90 = east.")]
+    public Light sunLight;
+
+    [Header("Movement Speed")]
+    public float lookSensitivity = 0.2f;
+    public float moveSpeed = 10f;
+    public float altitudeSpeed = 50f;
+
+    [Header("Sun State")]
     [Range(0f, 360f)]
     public float sunAzimuth = 180f;
-
-    [Tooltip("Sun elevation above horizon (degrees). -5 = below horizon, 90 = zenith.")]
     [Range(-10f, 90f)]
     public float sunElevation = 45f;
 
-    [Header("Movement")]
-    public float moveSpeed = 200f;
-    public float lookSpeed = 60f;
-    public float scrollSpeed = 500f;
-
-    [Header("Setup")]
-    public Light sunLight;
-    public float planetRadius = 6360000f;
+    // ── Internal state ────────────────────────────────────────────────
+    private Vector3 m_PrevMousePos;
+    private Vector3 m_InitialPosition;
+    private Quaternion m_InitialRotation;
 
     void Start()
     {
@@ -63,61 +44,86 @@ public class AtmosphereTestController : MonoBehaviour
             if (sunLight != null)
                 RenderSettings.sun = sunLight;
         }
+
+        m_InitialPosition = transform.position;
+        m_InitialRotation = transform.rotation;
+        m_PrevMousePos = Input.mousePosition;
     }
 
     void Update()
     {
         HandleInput();
-        ApplySun();
-        ApplyCamera();
     }
 
     void HandleInput()
     {
         // ── Sun presets ─────────────────────────────────────────────
-        if (Input.GetKeyDown(KeyCode.Alpha1)) { sunElevation = 90f; sunAzimuth = 180f; } // noon
-        if (Input.GetKeyDown(KeyCode.Alpha2)) { sunElevation = 10f; sunAzimuth = 90f;  } // sunrise
-        if (Input.GetKeyDown(KeyCode.Alpha3)) { sunElevation = 0f;  sunAzimuth = 270f; } // sunset
-        if (Input.GetKeyDown(KeyCode.Alpha4)) { sunElevation = -5f; sunAzimuth = 270f; } // night
+        if (Input.GetKeyDown(KeyCode.Alpha1)) { sunElevation = 90f; sunAzimuth = 180f; ApplySun(); }
+        if (Input.GetKeyDown(KeyCode.Alpha2)) { sunElevation = 10f; sunAzimuth = 90f;  ApplySun(); }
+        if (Input.GetKeyDown(KeyCode.Alpha3)) { sunElevation = 0f;  sunAzimuth = 270f; ApplySun(); }
+        if (Input.GetKeyDown(KeyCode.Alpha4)) { sunElevation = -5f; sunAzimuth = 270f; ApplySun(); }
         if (Input.GetKeyDown(KeyCode.Space))
         {
-            altitude = 1000f; pitch = 0f; yaw = 180f;
-            latitude = 0f; longitude = 0f;
-            sunElevation = 45f; sunAzimuth = 180f;
+            transform.position = m_InitialPosition;
+            transform.rotation = m_InitialRotation;
         }
 
-        // ── Altitude ────────────────────────────────────────────────
-        altitude += Input.GetAxis("Mouse ScrollWheel") * scrollSpeed * Time.deltaTime * 50f;
-        altitude = Mathf.Max(1f, altitude);
+        // ── Mouse delta (reset on button down) ──────────────────────
+        if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
+            m_PrevMousePos = Input.mousePosition;
 
-        // ── Camera look (right mouse) ───────────────────────────────
-        if (Input.GetMouseButton(1) && !Input.GetKey(KeyCode.LeftShift))
-        {
-            yaw += Input.GetAxis("Mouse X") * lookSpeed;
-            pitch -= Input.GetAxis("Mouse Y") * lookSpeed;
-            pitch = Mathf.Clamp(pitch, -30f, 89f);
-        }
+        Vector3 mouseDelta = Input.mousePosition - m_PrevMousePos;
+        m_PrevMousePos = Input.mousePosition;
 
-        // ── Sun angle (Shift + right mouse) ─────────────────────────
-        if (Input.GetMouseButton(1) && Input.GetKey(KeyCode.LeftShift))
+        // ── Left mouse: rotate sun ──────────────────────────────────
+        if (Input.GetMouseButton(0))
         {
-            sunAzimuth += Input.GetAxis("Mouse X") * lookSpeed;
-            sunElevation -= Input.GetAxis("Mouse Y") * lookSpeed;
-            sunElevation = Mathf.Clamp(sunElevation, -10f, 90f);
+            sunAzimuth   += mouseDelta.x * lookSensitivity;
+            sunElevation -= mouseDelta.y * lookSensitivity;
+            sunElevation  = Mathf.Clamp(sunElevation, -10f, 90f);
             if (sunAzimuth > 360f) sunAzimuth -= 360f;
             if (sunAzimuth < 0f)   sunAzimuth += 360f;
+            ApplySun();
         }
 
-        // ── WASD surface movement ───────────────────────────────────
-        float latMove = Input.GetAxis("Vertical")   * moveSpeed * Time.deltaTime;
-        float lonMove = Input.GetAxis("Horizontal") * moveSpeed * Time.deltaTime;
-        // Convert meters to degrees on sphere
-        float r = planetRadius + altitude;
-        latitude  += latMove / r * Mathf.Rad2Deg;
-        longitude += lonMove / (r * Mathf.Cos(latitude * Mathf.Deg2Rad)) * Mathf.Rad2Deg;
-        latitude  = Mathf.Clamp(latitude,  -89f, 89f);
-        if (longitude >  180f) longitude -= 360f;
-        if (longitude < -180f) longitude += 360f;
+        // ── Right mouse: rotate camera ──────────────────────────────
+        if (Input.GetMouseButton(1))
+        {
+            transform.Rotate(0f, mouseDelta.x * lookSensitivity, 0f, Space.World);
+            transform.Rotate(-mouseDelta.y * lookSensitivity, 0f, 0f, Space.Self);
+        }
+
+        // ── Scroll wheel: altitude ──────────────────────────────────
+        float scroll = Input.GetAxis("Mouse ScrollWheel");
+        if (Mathf.Abs(scroll) > 0.001f)
+        {
+            Vector3 pos = transform.position;
+            float step = Mathf.Max(pos.y * 0.5f, 0.3f);
+            pos.y += scroll * step;
+            pos.y = Mathf.Max(pos.y, 0.1f);
+            transform.position = pos;
+        }
+
+        // ── WASD movement (world-space) ─────────────────────────────
+        Vector3 move = Vector3.zero;
+        if (Input.GetKey(KeyCode.W)) move.z += 1f;
+        if (Input.GetKey(KeyCode.S)) move.z -= 1f;
+        if (Input.GetKey(KeyCode.A)) move.x -= 1f;
+        if (Input.GetKey(KeyCode.D)) move.x += 1f;
+        if (Input.GetKey(KeyCode.E)) move.y += 1f;
+        if (Input.GetKey(KeyCode.Q)) move.y -= 1f;
+
+        if (move.sqrMagnitude > 0.001f)
+        {
+            float speed = moveSpeed * Time.deltaTime;
+            // Hold Shift for faster movement
+            if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+                speed *= 5f;
+            transform.Translate(move.normalized * speed, Space.Self);
+            // Clamp Y so camera doesn't go below surface
+            Vector3 p = transform.position;
+            if (p.y < 0.1f) { p.y = 0.1f; transform.position = p; }
+        }
     }
 
     void ApplySun()
@@ -126,53 +132,17 @@ public class AtmosphereTestController : MonoBehaviour
         {
             float az = sunAzimuth * Mathf.Deg2Rad;
             float el = sunElevation * Mathf.Deg2Rad;
-            Vector3 dir = new Vector3(
+            // Direction FROM sun TO planet (light direction)
+            Vector3 sunDir = new Vector3(
                 Mathf.Cos(el) * Mathf.Sin(az),
                 Mathf.Sin(el),
                 Mathf.Cos(el) * Mathf.Cos(az)
             );
-            sunLight.transform.forward = -dir;
+            // Atmosphere does: sunDir = -sun.transform.forward
+            // So: sun.transform.forward = -sunDir
+            sunLight.transform.forward = -sunDir;
         }
     }
 
-    void ApplyCamera()
-    {
-        Camera cam = GetComponent<Camera>();
-        if (cam == null) return;
-
-        // Position on sphere, planet center at origin
-        float lat = latitude  * Mathf.Deg2Rad;
-        float lon = longitude * Mathf.Deg2Rad;
-        float r = planetRadius + altitude;
-
-        Vector3 pos = new Vector3(
-            r * Mathf.Cos(lat) * Mathf.Cos(lon),
-            r * Mathf.Sin(lat),
-            r * Mathf.Cos(lat) * Mathf.Sin(lon)
-        );
-
-        // Radial outward = local "up"
-        Vector3 up = pos.normalized;
-
-        // Forward: world-space yaw (around global Y) then pitch
-        float yRad = yaw * Mathf.Deg2Rad;
-        float pRad = pitch * Mathf.Deg2Rad;
-        Vector3 fwd = new Vector3(
-            Mathf.Sin(yRad) * Mathf.Cos(pRad),
-            Mathf.Sin(pRad),
-            Mathf.Cos(yRad) * Mathf.Cos(pRad)
-        );
-
-        cam.transform.position = pos;
-        cam.transform.rotation = Quaternion.LookRotation(fwd, up);
-    }
-
-    void OnValidate()
-    {
-        if (Application.isPlaying)
-        {
-            ApplySun();
-            ApplyCamera();
-        }
-    }
+    void OnValidate() { }
 }
