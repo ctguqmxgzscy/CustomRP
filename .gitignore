@@ -6,17 +6,51 @@
 [Bb]uilds/
 [Ll]ogs/
 [Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
 
-# IDE
+# Asset meta data should only be ignored when the corresponding asset is also ignored
+!/[Aa]ssets/**/*.meta
+
+# IDE / Editor
 .idea/
 .vs/
+.vscode/
 *.csproj
 *.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 *.DotSettings
 *.DotSettings.user
 
-# OS
+# OS generated
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Memory card (personal, not project)
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Bb]in/
+[Uu]ntracked/
+
+# Unity Cloud Build
+[Uu]nityCloudBuildManifest.json
+
+# Crashlytics
+CrashlyticsBuildLog.csv
+
+# Temporary screenshots
+screenshot_temp.*
+
+# Session state files
+.claude/session-state-*.md
