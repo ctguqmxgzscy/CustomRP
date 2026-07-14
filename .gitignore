@@ -54,3 +54,24 @@ screenshot_temp.*
 
 # Session state files
 .claude/session-state-*.md
+
+# Claude Code
+.claude/
+Assets/.claude/
+CLAUDE.md
+Assets/CLAUDE.md
+Assets/CLAUDE.md.meta
+Progress.md
+.mcp.json
+docs/superpowers/
+
+# Graphify
+graphify-out/
+Assets/graphify-out/
+Assets/graphify-out.meta
+
+# Project design docs (not source)
+Assets/Features/Atmosphere/atmospheric-scattering-reference.md
+Assets/Features/Atmosphere/atmospheric-scattering-reference.md.meta
+Assets/Features/Atmosphere/multi-scattering-plan.md
+Assets/Features/Atmosphere/multi-scattering-plan.md.meta
