@@ -1,0 +1,72 @@
+// Depth Pyramid (Hi-Z) 生成 Compute Shader
+// 用于 SSR 射线行进的层级深度加速结构
+// 从 HDRP DepthPyramid.compute 迁移，适配 URP
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel KDepthDownsample8
+#pragma kernel KDepthCopy
+
+// URP 兼容宏：下列 _X 后缀宏来自 HDRP TextureXR.hlsl，URP 无此文件
+// 无 XR 时直接映射到标准 HLSL 类型/函数
+#ifndef COORD_TEXTURE2D_X
+#define COORD_TEXTURE2D_X(pixelCoord)  pixelCoord
+#endif
+#ifndef RW_TEXTURE2D_X
+#define RW_TEXTURE2D_X(type, name)  RWTexture2D<type> name
+#endif
+#ifndef LOAD_TEXTURE2D_X
+#define LOAD_TEXTURE2D_X(textureName, unCoord2)  textureName[unCoord2]
+#endif
+
+RW_TEXTURE2D_X(float, _DepthMipChain);
+
+CBUFFER_START(cb)
+    uint4 _SrcOffsetAndLimit; // {srcOffsetX, srcOffsetY, srcLimitX, srcLimitY}
+    uint4 _DstOffset; // {dstOffsetX, dstOffsetY, 0, 0}
+CBUFFER_END
+
+// URP 使用 reverse Z: 最近 = 1, 最远 = 0
+// 所以 min depth (最近) = max()
+#if UNITY_REVERSED_Z
+#define MIN_DEPTH(l, r) max(l, r)
+#else
+#define MIN_DEPTH(l, r) min(l, r)
+#endif
+
+// -----------------------------------------------------------------------------
+// KDepthCopy — 将 _CameraDepthTexture 复制到金字塔 mip 0
+//   替代 cmd.CopyTexture，避免 D32_SFloat_S8_UInt → R32_SFloat 格式不兼容
+// -----------------------------------------------------------------------------
+[numthreads(8, 8, 1)]
+void KDepthCopy(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 coord = dispatchThreadId.xy;
+    float depth = LOAD_TEXTURE2D_X(_CameraDepthTexture, coord).r;
+    _DepthMipChain[COORD_TEXTURE2D_X(coord)] = depth;
+}
+
+// 2x2 downsampling，取每个 2x2 块的最小深度（最近点）
+[numthreads(8, 8, 1)]
+void KDepthDownsample8(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 srcOffset = _SrcOffsetAndLimit.xy;
+    uint2 srcLimit = _SrcOffsetAndLimit.zw;
+    uint2 dstOffset = _DstOffset.xy;
+
+    // 当前线程读取的 2x2 像素块的左上角
+    uint2 srcPixelUL = srcOffset + (dispatchThreadId.xy << 1);
+
+    float p00 = _DepthMipChain[COORD_TEXTURE2D_X(min(srcPixelUL + uint2(0u, 0u), srcLimit))];
+    float p10 = _DepthMipChain[COORD_TEXTURE2D_X(min(srcPixelUL + uint2(1u, 0u), srcLimit))];
+    float p01 = _DepthMipChain[COORD_TEXTURE2D_X(min(srcPixelUL + uint2(0u, 1u), srcLimit))];
+    float p11 = _DepthMipChain[COORD_TEXTURE2D_X(min(srcPixelUL + uint2(1u, 1u), srcLimit))];
+
+    float minDepth = MIN_DEPTH(MIN_DEPTH(p00, p10), MIN_DEPTH(p01, p11));
+
+    _DepthMipChain[COORD_TEXTURE2D_X(dstOffset + dispatchThreadId.xy)] = minDepth;
+}
+
+#undef MIN_DEPTH

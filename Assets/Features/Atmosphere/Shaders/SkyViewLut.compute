@@ -1,0 +1,103 @@
+// Sky View LUT Generator — Compute Shader
+// Precomputes an equirectangular sky color map for atmospheric scattering.
+// Resolution: 512×256 (latitude-longitude, 2:1 ratio)
+// Each pixel maps to a view direction; ray-marched from camera position.
+//
+// Input:  _OpticalDepthLUT (set as global texture by AtmosphereSkyboxLutFeature)
+// Output: _SkyViewLut (RWTexture2D, set as global texture for skybox shader)
+
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel ComputeSkyViewLut
+
+// ── XR compatibility macros ──────────────────────────────────────────────
+#ifndef COORD_TEXTURE2D_X
+#define COORD_TEXTURE2D_X(pixelCoord)  pixelCoord
+#endif
+#ifndef RW_TEXTURE2D_X
+#define RW_TEXTURE2D_X(type, name)  RWTexture2D<type> name
+#endif
+#ifndef LOAD_TEXTURE2D_X
+#define LOAD_TEXTURE2D_X(textureName, unCoord2)  textureName[unCoord2]
+#endif
+#ifndef TEXTURE2D_X
+#define TEXTURE2D_X(type, name)  Texture2D<type> name
+#endif
+
+#define LUT_WIDTH  512
+#define LUT_HEIGHT 256
+
+Texture2D<float2> _OpticalDepthLUT;
+SamplerState sampler_OpticalDepthLUT;
+
+Texture2D<float4> _MultiScatteringLUT;
+SamplerState sampler_MultiScatteringLUT;
+
+RW_TEXTURE2D_X(float4, _SkyViewLut);
+
+
+#define ATM_SUN_DISK
+#define ATM_MULTI_SCATTERING
+#include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
+
+// ── Main Kernel ──────────────────────────────────────────────────────────
+[numthreads(8, 8, 1)]
+void ComputeSkyViewLut(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= LUT_WIDTH || id.y >= LUT_HEIGHT) return;
+
+    float2 uv = (float2(id.xy) + 0.5) / float2(LUT_WIDTH, LUT_HEIGHT);
+    float3 viewDirWS = UVToViewDir(uv);
+    float3 planetCenter = float3(0, 0, 0);
+    float3 eyePos = float3(0, _CameraHeight + _PlanetRadius, 0);
+
+    float tEntry, tExit;
+    if (!AtmosphericRayIntersect(eyePos, viewDirWS, planetCenter,
+                                 _PlanetRadius + _AtmosphereHeight, _PlanetRadius, tEntry, tExit))
+    {
+        _SkyViewLut[id.xy] = float4(0, 0, 0, 1);
+        return;
+    }
+
+    float3 rayOrigin = eyePos + viewDirWS * tEntry;
+    float rayLength = tExit - tEntry;
+    float3 sunDir = normalize(_SunDirection);
+    float cosTheta = dot(viewDirWS, sunDir);
+    float scaleHeightM = _MieScaleHeight;
+
+    // ── Numerical Integration ─────────────────────────────────────────
+    float3 scatter = float3(0, 0, 0);
+    float tauPA_R = 0.0;
+    float tauPA_M = 0.0;
+    float time = 0.0;
+    float ds = rayLength / _ViewSamples;
+
+    for (int i = 0; i < (int)_ViewSamples; i++)
+    {
+        float3 P = rayOrigin + viewDirWS * (time + ds * 0.5);
+        float height = distance(planetCenter, P) - _PlanetRadius;
+
+        // In-scattering source at P
+        float3 J = EvaluateInScattering(height, _ScaleHeight, scaleHeightM, cosTheta, _MieG);
+
+        // PA transmittance
+        tauPA_R += exp(-height / _ScaleHeight) * ds;
+        tauPA_M += exp(-height / scaleHeightM) * ds;
+        float3 T_PA = exp(-kRayleighScattering * tauPA_R - kMieScattering * tauPA_M);
+
+        // CP transmittance — with Bruneton horizon smoothstep
+        float cosSunZenith = dot(normalize(P - planetCenter), sunDir);
+        float3 T_CP = GetTransmittanceToSun(height, cosSunZenith);
+
+        // Multi-scattering (Hillaire 2020 closed-form)
+        // Does NOT multiply by T_CP — LUT already accounts for sun transmittance
+        // from all directions arriving at P.
+        float3 msContrib = GetMultiScattering(P, sunDir);
+
+        // Single scattering
+        scatter += _SunIntensity * _SunLightColor * (J * T_CP + msContrib) * T_PA * ds;
+        time += ds;
+    }
+
+    _SkyViewLut[id.xy] = float4(scatter, 1.0);
+}

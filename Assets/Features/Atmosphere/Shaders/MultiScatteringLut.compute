@@ -1,0 +1,127 @@
+// Multi-Scattering LUT Generator — Compute Shader
+// Precomputes the Hillaire 2020 closed-form multi-scattering approximation.
+// Resolution: 32×32 (mu_s × height)
+// X = cos(sun zenith) [-1, 1], Y = height [0, AtmosphereHeight]
+//
+// Algorithm:
+//   G = spherical integral of single-scattered light (64 directions × 32 steps)
+//   f = spherical integral of scattering-to-extinction ratio
+//   MS = G × 1/(1 - f)  ← geometric series sum of all higher orders
+//
+// Dependencies: _OpticalDepthLUT (256×256), must be generated first.
+// Output: _MultiScatteringLUT (RWTexture2D), sampled by SkyViewLut.compute.
+
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel ComputeMultiScatteringLut
+
+// ── XR compatibility macros ──────────────────────────────────────────────
+#ifndef COORD_TEXTURE2D_X
+#define COORD_TEXTURE2D_X(pixelCoord)  pixelCoord
+#endif
+#ifndef RW_TEXTURE2D_X
+#define RW_TEXTURE2D_X(type, name)  RWTexture2D<type> name
+#endif
+#ifndef LOAD_TEXTURE2D_X
+#define LOAD_TEXTURE2D_X(textureName, unCoord2)  textureName[unCoord2]
+#endif
+#ifndef TEXTURE2D_X
+#define TEXTURE2D_X(type, name)  Texture2D<type> name
+#endif
+
+#define LUT_SIZE 32
+#define NUM_DIRECTIONS 64
+#define NUM_STEPS 32
+
+
+Texture2D<float2> _OpticalDepthLUT;
+SamplerState sampler_OpticalDepthLUT;
+
+RW_TEXTURE2D_X(float4, _MultiScatteringLUT);
+
+
+#include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
+
+// ── Main Kernel ──────────────────────────────────────────────────────────
+[numthreads(4, 4, 1)]
+void ComputeMultiScatteringLut(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= LUT_SIZE || id.y >= LUT_SIZE) return;
+
+    float2 uv = (float2(id.xy) + 0.5) / float(LUT_SIZE);
+
+    // uv.x: cos(sun zenith) from -1 to 1, uv.y: height from 0 to atmosphereHeight
+    float mu_s = uv.x * 2.0 - 1.0; // cos(sun zenith)
+    float height = uv.y * _AtmosphereHeight;
+
+    float3 sunDir = float3(sqrt(max(1.0 - mu_s * mu_s, 0.0)), mu_s, 0.0);
+    float3 P = float3(0.0, _PlanetRadius + height, 0.0);
+    float3 planetCenter = float3(0.0, 0.0, 0.0);
+    float atmosphereRadius = _PlanetRadius + _AtmosphereHeight;
+
+    float3 G = float3(0.0, 0.0, 0.0);
+    float3 f = float3(0.0, 0.0, 0.0);
+
+    // 高阶散射具有各向同性，因此使用统一的相位函数
+    float uniformPhase = 1.0 / (4.0 * PI);
+    // Sphere area normalization: 4π / NUM_DIRECTIONS
+    float sphereNorm = (4.0 * PI) / float(NUM_DIRECTIONS);
+
+    for (int d = 0; d < NUM_DIRECTIONS; d++)
+    {
+        float3 viewDir = FibonacciSphereDir(d, NUM_DIRECTIONS);
+
+        // Ray-sphere intersection from P in direction viewDir
+        float2 atmHit = RaySphereIntersection(P, viewDir, planetCenter, atmosphereRadius);
+        if (atmHit.x == -1.0) continue; // discriminant < 0, no intersection at all
+
+        float tNear = max(atmHit.x, 0.0); // clamp entry to 0 when inside sphere
+        float tFar = atmHit.y;
+
+        // Truncate by planet
+        float2 planetHit = RaySphereIntersection(P, viewDir, planetCenter, _PlanetRadius);
+        if (planetHit.x > 0.0 && planetHit.y > planetHit.x)
+            tFar = min(tFar, planetHit.x);
+
+        if (tNear >= tFar) continue;
+
+        float distance = tFar - tNear;
+        float ds = distance / float(NUM_STEPS);
+
+        float3 opticalDepth = float3(0.0, 0.0, 0.0); // sigma_t integrated
+        float3 rayOrigin = P + viewDir * tNear;
+
+        for (int s = 0; s < NUM_STEPS; s++)
+        {
+            float3 p = rayOrigin + viewDir * (float(s) + 0.5) * ds;
+            float h = length(p) - _PlanetRadius;
+            h = max(h, 0.0);
+
+            float3 sigma_s = ScatteringCoefAtHeight(h);
+            float3 sigma_t = ExtinctionCoefAtHeight(h);
+
+            float cosSun = dot(normalize(p), sunDir);
+            float cosViewSun = dot(viewDir, sunDir);
+
+            opticalDepth += sigma_t * ds;
+
+            float3 T_sun = SampleTransmittanceLUT(h, cosSun);
+            float3 s_val = EvaluateInScattering(h, cosViewSun, _MieG);
+            float3 T_view = exp(-opticalDepth);
+
+            G += T_sun * s_val * T_view * uniformPhase * ds;
+            f += T_view * sigma_s * uniformPhase * ds;
+        }
+    }
+    G *= sphereNorm;
+    f *= sphereNorm;
+
+    // Closed-form geometric series for all higher-order scattering
+    // Clamp f to prevent division by zero / negative
+    float3 denom = max(1.0 - f, 1e-4);
+    float3 result = G / denom;
+
+    // For Debug
+    // _MultiScatteringLUT[id.xy] = float4(result, 1.0);
+    _MultiScatteringLUT[id.xy] = float4(result, 1.0);
+}

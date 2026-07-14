@@ -1,0 +1,755 @@
+// =============================================================================
+// Screen Space Reflections (SSR) Tracing Compute Shader
+// URP  — 从 HDRP ScreenSpaceReflections.compute 迁移
+// =============================================================================
+
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel SsrTrace
+#pragma kernel SsrReproject
+#pragma kernel KColorPyramidCopy
+#pragma kernel KColorDownsample
+#pragma kernel KColorGaussianH
+#pragma kernel KColorGaussianV
+
+// ---- 预处理器开关 ----
+#define SSR_TRACE_BEHIND_OBJECTS    // 允许射线穿透物体背后
+// SSR_TRACE_TOWARDS_EYE 已改为运行时开关 _SsrTraceTowardsEye
+
+// ---- 算法模式（由 C# 运行时传入，非编译期） ----
+// _SsrAlgorithm: 0 = Approximation, 1 = PBRAccumulation
+
+// ---- 头文件 ----
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/ImageBasedLighting.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/BSDF.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareNormalsTexture.hlsl"
+
+// ---- C# 端生成的 HLSL cbuffer ----
+#include "Assets/Features/ScreenSpaceReflection/Runtime/ShaderVariablesScreenSpaceReflection.cs.hlsl"
+
+// ---- URP 兼容宏 ----
+// 下列 _X 后缀宏来自 HDRP TextureXR.hlsl，URP 无此文件，手动定义
+// 无 XR 时直接映射到标准 HLSL 类型/函数
+#ifndef COORD_TEXTURE2D_X
+#define COORD_TEXTURE2D_X(pixelCoord)  pixelCoord
+#endif
+#ifndef RW_TEXTURE2D_X
+#define RW_TEXTURE2D_X(type, name)  RWTexture2D<type> name
+#endif
+#ifndef LOAD_TEXTURE2D_X
+#define LOAD_TEXTURE2D_X(textureName, unCoord2)  textureName[unCoord2]
+#endif
+
+// =============================================================================
+// 常量
+// =============================================================================
+#define SSR_TRACE_EPS    0.000488281f  // 2^-11
+#define MAX_MIP_COUNT    15
+
+#define MIN_GGX_ROUGHNESS 0.00001f
+#define MAX_GGX_ROUGHNESS 0.99999f
+
+// =============================================================================
+// Pseudo-random: Interleaved Gradient Noise（无需 blue noise 纹理）
+// =============================================================================
+float InterleavedGradientNoise(float2 positionSS, float frameCount)
+{
+    float2 magic = float2(0.06711056, 0.00583715);
+    float frame = frameCount * 5.588238;
+    return frac(magic * frame + 52.9829189 * frac(dot(positionSS, magic)));
+}
+
+// =============================================================================
+// GGX VNDF 权重计算（不包含 Fresnel，参考 HDRP PathTracingBSDF.hlsl）
+// =============================================================================
+float GetSSRSampleWeight(float3 V, float3 L, float roughness)
+{
+    float lambdaVPlusOne = Lambda_GGX(roughness, V) + 1.0;
+    float lambdaL = Lambda_GGX(roughness, L);
+    return lambdaVPlusOne / (lambdaVPlusOne + lambdaL);
+}
+
+// =============================================================================
+// GGX VNDF 重要性采样（仅方向，不含 Fresnel）
+// =============================================================================
+bool SampleGGX_VNDF(float roughness, float3x3 localToWorld, float3 V, float2 Xi,
+                    out float3 L, out float weight)
+{
+    weight = 0.0;
+    roughness = clamp(roughness, MIN_GGX_ROUGHNESS, MAX_GGX_ROUGHNESS);
+
+    float VdotH;
+    float3 localV, localH;
+    SampleGGXVisibleNormal(Xi, V, localToWorld, roughness, localV, localH, VdotH);
+
+    float3 localL = 2.0 * VdotH * localH - localV;
+    L = mul(localL, localToWorld);
+
+    if (localL.z < 0.001)
+        return false;
+
+    weight = GetSSRSampleWeight(localV, localL, roughness);
+
+    if (weight < 0.001)
+        return false;
+
+    return true;
+}
+
+// =============================================================================
+// 纹理声明
+// =============================================================================
+
+// -- 只读纹理（由 URP 管线提供） --
+TEXTURE2D_X(_CameraOpaqueTexture); // 当前帧不透明颜色
+TEXTURE2D_X(_MotionVectorTexture); // 运动矢量
+TEXTURE2D_X(_SsrHistoryTexture); // 上一帧累积的反射颜色（预乘 alpha，阶段 7）
+TEXTURE2D_X(_ColorPyramidTexture); // 上一帧 Color Pyramid（mip chain，按粗糙度 LOD 采样）
+
+// -- RW 纹理（UAV，本 shader 写入） --
+RW_TEXTURE2D_X(float, _DepthMipChain);
+RW_TEXTURE2D_X(float2, _SsrHitPointTexture); // SsrTrace 输出: hit NDC
+RW_TEXTURE2D_X(float4, _SsrAccumTexture); // SsrReproject 输出: 反射颜色
+RW_TEXTURE2D_X(float4, _ColorPyramidRW); // KColorPyramidCopy 输出: 仅 mip 0
+
+#ifdef SSR_DEBUG
+RW_TEXTURE2D_X(float4, _SsrDebugTexture);
+#endif
+
+// 算法选择: 0 = Approximation, 1 = PBRAccumulation（由 C# 传入）
+int _SsrAlgorithm;
+
+// 帧索引（用于随机种子，由 C# 传入）
+float _SsrFrameIndex;
+
+// 速度拒绝模式标志（由 C# 传入）
+int _SsrWorldSpeedRejection; // 1 = 世界空间速度拒绝，0 = NDC 空间
+int _SsrSmoothSpeedRejection; // 1 = 平滑拒绝（部分衰减），0 = 硬阈值
+int _SsrSpeedSurfaceOnly; // 仅反射表面速度
+int _SsrSpeedTargetOnly; // 仅命中表面速度
+int _SsrTraceTowardsEye; // 1 = 允许追踪朝向相机的射线（凹面反射）
+
+// =============================================================================
+// 结构化缓冲区
+// =============================================================================
+StructuredBuffer<int2> _DepthPyramidMipLevelOffsets;
+
+// =============================================================================
+// 默认输出（在前，避免 forward-reference）
+// =============================================================================
+void WriteDefaultOutput(uint2 positionSS)
+{
+    _SsrHitPointTexture[COORD_TEXTURE2D_X(positionSS)] = float2(0.0, 0.0);
+}
+
+// =============================================================================
+// Hi-Z 射线行进
+//
+// 参考文献:
+//   [1] Michal Drobot - Quadtree Displacement Mapping with Height Blending
+//   [2] Yasin Uludag  - Hi-Z Screen-Space Cone-Traced Reflections
+//   [3] Jean-Philippe Grenier - Notes On Screen Space HIZ Tracing
+// =============================================================================
+
+float3 RayMarchSSR(
+    float3 rayOriginSS, // 射线起点（SS 坐标: xy=像素, z=depth）
+    float3 rayDirSS, // 射线方向（SS 坐标）
+    int2 rayStep, // 各轴步进方向（0 或 1）
+    float3 rcpRayDir, // 1/rayDir
+    float3 raySign, // 各轴符号（+1 或 -1）
+    float tMax, // 最大追踪距离
+    int maxIterations, // 最大迭代次数
+    int maxMipLevel, // 金字塔最大 mip
+    bool reflectSky, // 是否反射天空
+    bool rayTowardsEye, // 射线是否朝向相机
+    out float2 hitNDC, // 命中 NDC
+    out int iterCount // 实际迭代次数
+)
+{
+    hitNDC = float2(0.0, 0.0);
+    iterCount = 0;
+
+    // 从下一个像素开始，避免自交
+    float t = min(abs(0.5 * rcpRayDir.x), abs(0.5 * rcpRayDir.y));
+
+    float3 rayPos = rayOriginSS;
+    int mipLevel = 0;
+    bool hit = false;
+    bool miss = false;
+    bool belowMip0 = false;
+
+    [loop]
+    while (!(hit || miss) && (t <= tMax) && (iterCount < maxIterations))
+    {
+        rayPos = rayOriginSS + t * rayDirSS;
+
+        // 边界偏置
+        float2 sgnEdgeDist = round(rayPos.xy) - rayPos.xy;
+        float2 satEdgeDist = clamp(raySign.xy * sgnEdgeDist + SSR_TRACE_EPS, 0.0, SSR_TRACE_EPS);
+        rayPos.xy += raySign.xy * satEdgeDist;
+
+        // 从深度金字塔加载当前 mip
+        int2 mipCoord = (int2)rayPos.xy >> mipLevel;
+        int2 mipOffset = _DepthPyramidMipLevelOffsets[mipLevel];
+
+        float4 bounds;
+        bounds.xy = (mipCoord + rayStep) << mipLevel;
+        bounds.z = LOAD_TEXTURE2D_X(_DepthMipChain, mipOffset + mipCoord).r;
+        bounds.w = bounds.z * ssrThicknessScale + ssrThicknessBias;
+
+        // 到各表面的距离
+        float4 dist4 = bounds * rcpRayDir.xyzz - (rayOriginSS.xyzz * rcpRayDir.xyzz);
+        float distWall = min(dist4.x, dist4.y);
+        float distFloor = dist4.z;
+
+        // 位置判定（reverse Z）
+        bool belowFloor = rayPos.z < bounds.z;
+        bool aboveBase = rayPos.z >= bounds.w;
+        bool insideFloor = belowFloor && aboveBase;
+        bool hitFloor = (t <= distFloor) && (distFloor <= distWall);
+
+        #ifdef SSR_TRACE_BEHIND_OBJECTS
+        miss = belowMip0 && insideFloor;
+        #else
+        miss = belowMip0;
+        #endif
+        hit = (mipLevel == 0) && (hitFloor || insideFloor);
+        belowMip0 = (mipLevel == 0) && belowFloor;
+
+        // 推进
+        t = hitFloor ? distFloor : ((mipLevel != 0 && belowFloor) ? t : distWall);
+        rayPos.z = bounds.z;
+
+        // 切换 mip level
+        mipLevel += (hitFloor || belowFloor || rayTowardsEye) ? -1 : 1;
+        mipLevel = clamp(mipLevel, 0, maxMipLevel);
+
+        iterCount++;
+    }
+
+    // 天空处理
+    miss = miss || (!reflectSky && rayPos.z == 0.0);
+    hit = hit && !miss;
+
+    if (hit)
+    {
+        hitNDC = floor(rayPos.xy) * _ScreenSize.zw + (0.5 * _ScreenSize.zw);
+    }
+
+    return float3(rayPos.xy, hit ? 1.0 : 0.0);
+}
+
+// =============================================================================
+// SsrTrace Kernel
+// =============================================================================
+
+[numthreads(8, 8, 1)]
+void SsrTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 positionSS = dispatchThreadId.xy;
+
+    // ---- 深度 ----
+    float deviceDepth = LOAD_TEXTURE2D_X(_CameraDepthTexture, positionSS).r;
+
+    if (deviceDepth == UNITY_RAW_FAR_CLIP_VALUE)
+    {
+        WriteDefaultOutput(positionSS);
+        return;
+    }
+
+    // ---- 世界位置、法线和光滑度（一次 Load 获取所有 RGBA 通道） ----
+    float2 positionNDC = positionSS * _ScreenSize.zw + (0.5 * _ScreenSize.zw);
+    float3 positionWS = ComputeWorldSpacePosition(positionNDC, deviceDepth, UNITY_MATRIX_I_VP);
+    float3 V = GetWorldSpaceNormalizeViewDir(positionWS);
+
+    // _CameraNormalsTexture 格式: R8G8B8A8_SNorm
+    //   RGB = world-space normal（自动解码为 [-1, 1]）
+    //   A   = per-pixel smoothness（阶段 6: Lit shader DepthNormals pass 写入）
+    float4 normalAndSmoothness = LOAD_TEXTURE2D_X(_CameraNormalsTexture, positionSS);
+    float3 N = normalAndSmoothness.xyz;
+    float pixelSmoothness = normalAndSmoothness.a;
+
+    // 若 alpha 接近 0（非 Lit shader 或未写入），回退到 uniform 粗糙度
+    float perceptualRoughness = (pixelSmoothness > 0.001) ? (1.0 - pixelSmoothness) : ssrUniformRoughness;
+
+    float NdotV = dot(N, V);
+    if (NdotV <= 0.0)
+    {
+        WriteDefaultOutput(positionSS);
+        return;
+    }
+    if (perceptualRoughness > ssrRoughnessFadeEnd)
+    {
+        WriteDefaultOutput(positionSS);
+        return;
+    }
+
+    // ---- 粗糙度 ----
+    float roughness = clamp(PerceptualRoughnessToRoughness(perceptualRoughness),
+                            MIN_GGX_ROUGHNESS, MAX_GGX_ROUGHNESS);
+
+    // ---- 反射方向（根据算法选择） ----
+    float3 R;
+    if (_SsrAlgorithm == 1) // PBR Accumulation: VNDF 重要性采样
+    {
+        float2 Xi;
+        Xi.x = InterleavedGradientNoise(float2(positionSS), _SsrFrameIndex);
+        Xi.y = InterleavedGradientNoise(float2(positionSS) + 0.5, _SsrFrameIndex);
+
+        // PBR roughness bias: 将 VNDF 采样方向向镜面反射方向偏移（对齐 HDRP）
+        //   coefBias = ssrPbrBias / roughness, then lerp Xi.x from random → 0 (specular peak)
+        float coefBias = ssrPbrBias / roughness;
+        Xi.x = lerp(Xi.x, 0.0, roughness * coefBias);
+
+        float3x3 localToWorld = GetLocalFrame(N);
+        float weight;
+        if (!SampleGGX_VNDF(roughness, localToWorld, V, Xi, R, weight))
+        {
+            WriteDefaultOutput(positionSS);
+            return;
+        }
+    }
+    else // Approximation: 镜面反射
+    {
+        R = reflect(-V, N);
+    }
+
+    // ---- 法线偏移（避免自反射） ----
+    float3 camPosWS = GetCurrentViewPosition();
+    positionWS = camPosWS + (positionWS - camPosWS) * (1.0 - 0.001 * rcp(max(NdotV, FLT_EPS)));
+    deviceDepth = ComputeNormalizedDeviceCoordinatesWithZ(positionWS, UNITY_MATRIX_VP).z;
+
+    // ---- 构建射线 ----
+    float3 rayOrigin = float3(positionSS + 0.5, deviceDepth);
+
+    float3 reflPosWS = positionWS + R;
+    float3 reflPosNDC = ComputeNormalizedDeviceCoordinatesWithZ(reflPosWS, UNITY_MATRIX_VP);
+    float3 reflPosSS = float3(reflPosNDC.xy * _ScreenSize.xy, reflPosNDC.z);
+
+    float3 rayDir = reflPosSS - rayOrigin;
+    float3 rcpRayDir = rcp(rayDir);
+    int2 rayStep = int2(rcpRayDir.x >= 0.0 ? 1 : 0,
+                        rcpRayDir.y >= 0.0 ? 1 : 0);
+    float3 raySign = float3(rcpRayDir.x >= 0.0 ? 1.0 : -1.0,
+                            rcpRayDir.y >= 0.0 ? 1.0 : -1.0,
+                            rcpRayDir.z >= 0.0 ? 1.0 : -1.0);
+    bool rayTowardsEye = rcpRayDir.z >= 0.0;
+
+    // ---- 提前终止检查 ----
+    bool killRay = false;
+    killRay = killRay || deviceDepth == UNITY_RAW_FAR_CLIP_VALUE;
+    killRay = killRay || reflPosSS.z <= 0.0;
+    killRay = killRay || NdotV <= 0.0;
+    killRay = killRay || perceptualRoughness > ssrRoughnessFadeEnd;
+    killRay = killRay || (rayTowardsEye && !_SsrTraceTowardsEye);
+
+    if (killRay)
+    {
+        WriteDefaultOutput(positionSS);
+        return;
+    }
+
+    // ---- tMax: 裁剪到视锥体 ----
+    float tMax;
+    {
+        const float halfTexel = 0.5;
+        float3 limits;
+        limits.x = (rcpRayDir.x >= 0.0) ? _ScreenSize.x - halfTexel : halfTexel;
+        limits.y = (rcpRayDir.y >= 0.0) ? _ScreenSize.y - halfTexel : halfTexel;
+        float maxDepth = (ssrReflectsSky != 0) ? -0.00000024 : 0.00000024;
+        limits.z = (rcpRayDir.z >= 0.0) ? 1.0 : maxDepth;
+
+        float3 dist = limits * rcpRayDir - (rayOrigin * rcpRayDir);
+        tMax = Min3(dist.x, dist.y, dist.z);
+    }
+
+    int maxMipLevel = min(ssrDepthPyramidMaxMip, MAX_MIP_COUNT - 1);
+
+    // ---- 执行 Hi-Z 射线行进 ----
+    float2 hitNDC;
+    int iterCount;
+    RayMarchSSR(rayOrigin, rayDir, rayStep, rcpRayDir, raySign,
+                tMax, ssrIterLimit, maxMipLevel,
+                ssrReflectsSky != 0, rayTowardsEye,
+                hitNDC, iterCount);
+
+    // ---- 写入命中结果 ----
+    if (all(hitNDC > 0.0))
+    {
+        _SsrHitPointTexture[COORD_TEXTURE2D_X(positionSS)] = hitNDC.xy;
+    }
+    else
+    {
+        WriteDefaultOutput(positionSS);
+    }
+
+    #ifdef SSR_DEBUG
+    _SsrDebugTexture[COORD_TEXTURE2D_X(positionSS)] = float4(
+        (float)iterCount / max(1.0, (float)ssrIterLimit),
+        hitNDC.xy,
+        1.0);
+    #endif
+}
+
+// =============================================================================
+// SsrReproject Kernel（阶段 7: 多帧累积 + 速度拒绝）
+// =============================================================================
+
+// PerceptualRoughness → 0..1 渐变系数
+// 对齐 HDRP: 使用 Remap10 将 [roughnessFadeStart, roughnessFadeEnd] 映射到 [1, 0]
+//   Remap10 定义自 Core RP Common.hlsl: saturate(endTimesRcpLength - x * rcpLength)
+//   roughness=roughnessFadeStart → Remap10=1（完全不透明）
+//   roughness=roughnessFadeEnd   → Remap10=0（完全淡出）
+float PerceptualRoughnessFade(float perceptualRoughness, float fadeRcpLength, float fadeEndTimesRcpLength)
+{
+    float t = Remap10(perceptualRoughness, fadeRcpLength, fadeEndTimesRcpLength);
+    return Smoothstep01(t);
+}
+
+// 屏幕边缘淡出：坐标越靠近边缘，淡出越多
+// HDRP 对应函数: 使用 Remap01 + Smoothstep01 实现平滑过渡
+float EdgeFade(float2 ndc, float rcpLength)
+{
+    float2 coordCS = ndc * 2.0 - 1.0; // [-1, 1], 0 = center
+    float2 dist = 1.0 - abs(coordCS); // [0, 1], 1 = center, 0 = edge
+    float2 t = saturate(dist * rcpLength);
+    return Smoothstep01(t.x) * Smoothstep01(t.y);
+}
+
+// 解码运动矢量（URP 格式：R16G16_SFloat，NDC 空间偏移）
+float2 DecodeMotionVec(float2 encoded)
+{
+    return encoded;
+}
+
+// 归一化（用于世界空间速度范围映射）
+float Normalize01(float value, float minValue, float maxValue)
+{
+    return (value - minValue) / (maxValue - minValue);
+}
+
+// 过滤非法颜色值（inf/NaN → 0）
+float3 SafeColor(float3 c)
+{
+    uint3 bits = asuint(c);
+    if (Max3(bits.r, bits.g, bits.b) < 0x7F800000) return c;
+    return float3(0.0, 0.0, 0.0);
+}
+
+float SafeAlpha(float a)
+{
+    return isfinite(a) ? a : 0.0;
+}
+
+[numthreads(8, 8, 1)]
+void SsrReproject(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 positionSS = dispatchThreadId.xy;
+
+    // ---- 获取命中位置 ----
+    float2 hitNDC = _SsrHitPointTexture[COORD_TEXTURE2D_X(positionSS)].xy;
+
+    if (all(hitNDC == 0.0))
+    {
+        _SsrAccumTexture[COORD_TEXTURE2D_X(positionSS)] = float4(0.0, 0.0, 0.0, 0.0);
+        return;
+    }
+
+    // ---- Per-pixel 粗糙度 ----
+    float pixelSmoothness = LOAD_TEXTURE2D_X(_CameraNormalsTexture, positionSS).a;
+    float perceptualRoughness = (pixelSmoothness > 0.001) ? (1.0 - pixelSmoothness) : ssrUniformRoughness;
+
+    float2 clampedNDC = min(hitNDC, 1.0 - 0.5 * _ScreenSize.zw);
+    uint2 hitSS = uint2(clampedNDC * _ScreenSize.xy);
+
+    // ---- 不透明度（两模式共用） ----
+    float opacity = EdgeFade(hitNDC, ssrEdgeFadeRcpLength)
+        * PerceptualRoughnessFade(perceptualRoughness,
+                                  ssrRoughnessFadeRcpLength,
+                                  ssrRoughnessFadeEndTimesRcpLength);
+    opacity = saturate(opacity);
+
+    if (_SsrAlgorithm == 1) // =============================================
+    {
+        // PBR Accumulation: Color Pyramid + 多帧累积 + 速度拒绝
+        // =============================================
+        // ---- 运动矢量重投影 ----
+        float2 surfaceMV = LOAD_TEXTURE2D_X(_MotionVectorTexture, positionSS).xy;
+        float speedSrc = length(surfaceMV);
+
+        float2 hitMV = LOAD_TEXTURE2D_X(_MotionVectorTexture, hitSS).xy;
+        float speedDst = length(hitMV);
+
+        float2 prevNDC = hitNDC - hitMV;
+        uint2 prevSS = uint2(prevNDC * _ScreenSize.xy);
+
+        if (any(prevNDC < 0.0) || any(prevNDC > 1.0))
+        {
+            _SsrAccumTexture[COORD_TEXTURE2D_X(positionSS)] = float4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+
+        // ================================================================
+        // Block sample (5-sample cross, 对齐 HDRP SSR_REPROJECT PBR)
+        //   参考: HDRP 14.0.12 ScreenSpaceReflections.compute:642
+        //   3×3 邻域跳四角 → 5 个有效采样，对每个邻居重做
+        //   motion vector 重投影 + Color Pyramid 采样，按 opacity 加权平均
+        // ================================================================
+        #define BLOCK_SAMPLE_RADIUS 1
+        int mipLevel = (int)lerp(0, ssrColorPyramidMaxMip, perceptualRoughness);
+        float3 blockColorSum = 0.0;
+        float blockWeightSum = 0.0;
+
+        for (int by = -BLOCK_SAMPLE_RADIUS; by <= BLOCK_SAMPLE_RADIUS; ++by)
+        {
+            for (int bx = -BLOCK_SAMPLE_RADIUS; bx <= BLOCK_SAMPLE_RADIUS; ++bx)
+            {
+                // 跳过四角（对齐 HDRP）
+                if (abs(bx) == abs(by) && abs(bx) == 1)
+                    continue;
+
+                // 邻居像素的 hit NDC
+                uint2 neighborSS = positionSS + uint2(bx, by);
+                float2 neighborHitNDC = _SsrHitPointTexture[COORD_TEXTURE2D_X(neighborSS)].xy;
+                if (all(neighborHitNDC == 0.0))
+                    continue;
+
+                // 邻居命中位置 → motion vector 重投影
+                float2 neighborClampedNDC = min(neighborHitNDC, 1.0 - 0.5 * _ScreenSize.zw);
+                uint2 neighborHitSS = uint2(neighborClampedNDC * _ScreenSize.xy);
+                float2 neighborHitMV = LOAD_TEXTURE2D_X(_MotionVectorTexture, neighborHitSS).xy;
+                float2 neighborPrevNDC = neighborHitNDC - neighborHitMV;
+
+                if (any(neighborPrevNDC < 0.0) || any(neighborPrevNDC > 1.0))
+                    continue;
+
+                uint2 neighborPrevSS = uint2(neighborPrevNDC * _ScreenSize.xy);
+
+                // Color Pyramid LOD 采样
+                float3 sampleColor = SafeColor(
+                    _ColorPyramidTexture.Load(uint3(neighborPrevSS, mipLevel)).rgb);
+
+                // 首帧回退到 opaque texture
+                if (all(sampleColor == 0.0))
+                    sampleColor = SafeColor(LOAD_TEXTURE2D_X(_CameraOpaqueTexture, neighborHitSS).rgb);
+
+                // 邻居的 opacity 权重
+                float neighborOpacity = EdgeFade(neighborHitNDC, ssrEdgeFadeRcpLength)
+                    * PerceptualRoughnessFade(perceptualRoughness,
+                                              ssrRoughnessFadeRcpLength,
+                                              ssrRoughnessFadeEndTimesRcpLength);
+                neighborOpacity = saturate(neighborOpacity);
+
+                if (neighborOpacity > 0.001)
+                {
+                    blockColorSum += sampleColor * neighborOpacity;
+                    blockWeightSum += neighborOpacity;
+                }
+            }
+        }
+        #undef BLOCK_SAMPLE_RADIUS
+
+        // 若 block sample 无有效结果，回退到中心像素单采样
+        float3 currentColor;
+        if (blockWeightSum > 0.0)
+            currentColor = blockColorSum / blockWeightSum;
+        else
+        {
+            currentColor = SafeColor(
+                _ColorPyramidTexture.Load(uint3(prevSS, mipLevel)).rgb);
+            if (all(currentColor == 0.0))
+                currentColor = SafeColor(LOAD_TEXTURE2D_X(_CameraOpaqueTexture, hitSS).rgb);
+        }
+
+        // 历史累积
+        float4 historyColor = LOAD_TEXTURE2D_X(_SsrHistoryTexture, prevSS);
+        historyColor.rgb = SafeColor(historyColor.rgb);
+        historyColor.a = SafeAlpha(historyColor.a);
+
+        // ---- 速度拒绝 ----
+        float effectiveAccum;
+
+        if (_SsrWorldSpeedRejection)
+        {
+            float3 worldSpeed = float3(0, 0, 0);
+            if (_SsrSpeedSurfaceOnly)
+            {
+                float z = LOAD_TEXTURE2D_X(_CameraDepthTexture, positionSS).r;
+                float4 m = float4(surfaceMV, z, 0.0);
+                float4 wm = mul(UNITY_MATRIX_I_VP, m);
+                worldSpeed += wm.xyz / wm.w;
+            }
+            if (_SsrSpeedTargetOnly)
+            {
+                float z = LOAD_TEXTURE2D_X(_CameraDepthTexture, hitSS).r;
+                float4 m = float4(hitMV, z, 0.0);
+                float4 wm = mul(UNITY_MATRIX_I_VP, m);
+                worldSpeed += wm.xyz / wm.w;
+            }
+            float speedDiff = length(worldSpeed);
+            float usedSpeed = saturate(Normalize01(
+                clamp(speedDiff, 0.0, ssrPrbSpeedRejectionScalerFactor),
+                0.0, ssrPrbSpeedRejectionScalerFactor));
+
+            if (_SsrSmoothSpeedRejection)
+                effectiveAccum = lerp(ssrAccumulationAmount, 1.0, saturate(usedSpeed * ssrPbrSpeedRejection));
+            else
+                effectiveAccum = usedSpeed >= ssrPbrSpeedRejection ? 1.0 : ssrAccumulationAmount;
+        }
+        else
+        {
+            float speedUsedLocally;
+            if (_SsrSpeedSurfaceOnly && _SsrSpeedTargetOnly)
+                speedUsedLocally = speedSrc + speedDst;
+            else if (_SsrSpeedSurfaceOnly)
+                speedUsedLocally = speedSrc;
+            else if (_SsrSpeedTargetOnly)
+                speedUsedLocally = speedDst;
+            else
+                speedUsedLocally = speedSrc + speedDst;
+
+            // 对齐 HDRP NDC 速度拒绝:
+            //   speed = saturate(mvLen * 1280 * rejection)
+            //   128/(0.5*0.2) = 1280, 使用默认值作为硬编码倍率
+            //   scalerFactor 仅用于世界空间模式
+            float speed = saturate(speedUsedLocally * 128.0 * ssrPbrSpeedRejection
+                / (0.5 * 0.2));
+            effectiveAccum = lerp(ssrAccumulationAmount, 1.0, speed);
+        }
+
+        // 混合当前帧与历史
+        float3 finalColor;
+        if (historyColor.a > 0.001)
+        {
+            float3 historyRGB = historyColor.rgb / historyColor.a;
+            finalColor = lerp(currentColor, historyRGB, saturate(effectiveAccum));
+        }
+        else
+        {
+            finalColor = currentColor;
+        }
+
+        _SsrAccumTexture[COORD_TEXTURE2D_X(positionSS)] = float4(finalColor * opacity, opacity);
+    }
+    else // ==============================================================
+    {
+        // Approximation: 单帧采样，无累积/速度拒绝
+        // ==============================================================
+        float3 reflectionColor = SafeColor(LOAD_TEXTURE2D_X(_CameraOpaqueTexture, hitSS).rgb);
+        _SsrAccumTexture[COORD_TEXTURE2D_X(positionSS)] = float4(reflectionColor * opacity, opacity);
+    }
+}
+
+// =============================================================================
+// KColorPyramidCopy Kernel
+//   将 _CameraOpaqueTexture 复制到 Color Pyramid mip 0
+//   解决格式不兼容问题（避免 CopyTexture 失败）
+//   写入 _ColorPyramidRW（current frame），下一帧成为 _ColorPyramidTexture 供 SSR 读取
+// =============================================================================
+
+[numthreads(8, 8, 1)]
+void KColorPyramidCopy(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 coord = dispatchThreadId.xy;
+    float4 color = LOAD_TEXTURE2D_X(_CameraOpaqueTexture, coord);
+    _ColorPyramidRW[COORD_TEXTURE2D_X(coord)] = color;
+}
+
+// =============================================================================
+// Color Pyramid Gaussian 生成内核（对齐 HDRP ColorPyramidPS 9-tap Gaussian）
+//   替代 cmd.GenerateMips() 的硬件 box filter，消除高粗糙度 LOD 的块状混叠
+//   每个 mip level 执行 3 步: Downsample → H Gaussian → V Gaussian
+//
+//   注意: 权重直接硬编码内联，避免 static const 数组在 FXC 下兼容问题
+//   9-tap 对称核: {0.00390625, 0.03125, 0.109375, 0.21875, 0.2734375,
+//                   0.21875, 0.109375, 0.03125, 0.00390625}
+// =============================================================================
+
+// 通用源纹理 SRV + mip level（按 kernel 绑定 _ColorPyramidTexture 或 _TempRT）
+Texture2D<float4> _SrcTexture;
+int _SrcMipLevel;
+float4 _SrcSize; // xy = src resolution, zw = 1/src resolution
+
+// 通用目标纹理 UAV
+RWTexture2D<float4> _DstTexture;
+
+/// KColorDownsample: 2×2 box average, src mip N-1 → dst mip N (half res)
+[numthreads(8, 8, 1)]
+void KColorDownsample(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 dstCoord = dispatchThreadId.xy;
+    uint2 dstSize = uint2(_SrcSize.xy) / 2;
+    if (any(dstCoord >= dstSize)) return;
+
+    uint2 srcCoord = dstCoord * 2;
+    int mip = _SrcMipLevel;
+    float4 c00 = _SrcTexture.Load(uint3(srcCoord + uint2(0, 0), mip));
+    float4 c10 = _SrcTexture.Load(uint3(srcCoord + uint2(1, 0), mip));
+    float4 c01 = _SrcTexture.Load(uint3(srcCoord + uint2(0, 1), mip));
+    float4 c11 = _SrcTexture.Load(uint3(srcCoord + uint2(1, 1), mip));
+
+    _DstTexture[dstCoord] = 0.25 * (c00 + c10 + c01 + c11);
+}
+
+/// 在指定偏移处采样源纹理（水平/垂直通用）
+float4 SampleSrc(int2 coord, int2 offset, int2 srcSize, int mip)
+{
+    int2 c = clamp(coord + offset, 0, srcSize - 1);
+    return _SrcTexture.Load(uint3(c, mip));
+}
+
+/// KColorGaussianH: 9-tap 水平 Gaussian blur（权重内联，避免 FXC static const 数组问题）
+[numthreads(8, 8, 1)]
+void KColorGaussianH(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 coord = dispatchThreadId.xy;
+    int2 srcSize = int2(_SrcSize.xy);
+    if (any(coord >= uint2(srcSize))) return;
+
+    int mip = _SrcMipLevel;
+
+    // 9-tap 对称: w[-4..4] = {0.00390625, 0.03125, 0.109375, 0.21875, 0.2734375, 0.21875, 0.109375, 0.03125, 0.00390625}
+    #define SAMPLE_H(o) SampleSrc(coord, int2(o, 0), srcSize, mip)
+
+    float4 color = SAMPLE_H(-4) * 0.00390625
+        + SAMPLE_H(-3) * 0.03125
+        + SAMPLE_H(-2) * 0.109375
+        + SAMPLE_H(-1) * 0.21875
+        + SAMPLE_H(0) * 0.2734375
+        + SAMPLE_H(1) * 0.21875
+        + SAMPLE_H(2) * 0.109375
+        + SAMPLE_H(3) * 0.03125
+        + SAMPLE_H(4) * 0.00390625;
+
+    _DstTexture[coord] = color;
+    #undef SAMPLE_H
+}
+
+/// KColorGaussianV: 9-tap 垂直 Gaussian blur（权重内联）
+[numthreads(8, 8, 1)]
+void KColorGaussianV(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 coord = dispatchThreadId.xy;
+    int2 srcSize = int2(_SrcSize.xy);
+    if (any(coord >= uint2(srcSize))) return;
+
+    int mip = _SrcMipLevel;
+
+    #define SAMPLE_V(o) SampleSrc(coord, int2(0, o), srcSize, mip)
+
+    float4 color = SAMPLE_V(-4) * 0.00390625
+        + SAMPLE_V(-3) * 0.03125
+        + SAMPLE_V(-2) * 0.109375
+        + SAMPLE_V(-1) * 0.21875
+        + SAMPLE_V(0) * 0.2734375
+        + SAMPLE_V(1) * 0.21875
+        + SAMPLE_V(2) * 0.109375
+        + SAMPLE_V(3) * 0.03125
+        + SAMPLE_V(4) * 0.00390625;
+
+    _DstTexture[coord] = color;
+    #undef SAMPLE_V
+}

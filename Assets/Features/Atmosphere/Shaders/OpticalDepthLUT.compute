@@ -1,0 +1,113 @@
+// Optical Depth LUT Generator — Compute Shader
+// Precomputes a 2D optical depth LUT for atmospheric scattering.
+// LUT axes: U = cos(sun zenith), V = height
+// Stored as RG16 (R = τ_Rayleigh, G = τ_Mie). Occluded rays store 1e20 → exp(-β·1e20) ≈ 0.
+// Transmittance T = exp(-β·τ) is computed at runtime by SampleTransmittanceLUT().
+
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel ComputeOpticalDepthLUT
+#include "Assets/Shaders/ShaderLibrary/MathHelper.hlsl"
+
+#ifndef COORD_TEXTURE2D_X
+#define COORD_TEXTURE2D_X(pixelCoord)  pixelCoord
+#endif
+#ifndef RW_TEXTURE2D_X
+#define RW_TEXTURE2D_X(type, name)  RWTexture2D<type> name
+#endif
+#ifndef LOAD_TEXTURE2D_X
+#define LOAD_TEXTURE2D_X(textureName, unCoord2)  textureName[unCoord2]
+#endif
+
+#define LUT_SIZE 256
+
+RW_TEXTURE2D_X(float2, _OpticalDepthLUT);
+
+float _PlanetRadius;
+float _AtmosphereRadius;
+float _ScaleHeight;
+float _MieScaleHeight;
+float _LightSamples;
+float _InvLUTSize; // 1.0 / LUT_SIZE
+
+// ── Optical Depth from P to atmosphere exit along sunDir ──────────────
+// Returns float2(tauR, tauM).
+// Returns float2(1e20, 1e20) if the ray hits the planet (occluded) —
+// exp(-beta * 1e20) ≈ 0, bilinear-interpolation friendly.
+float2 ComputeOpticalDepthToAtmTop(
+    float3 P, float3 sunDir,
+    float3 planetCenter,
+    float planetRadius, float atmosphereRadius,
+    float scaleHeightR, float scaleHeightM,
+    int sampleCount)
+{
+    float2 densityScaleHeight = float2(scaleHeightR, scaleHeightM);
+
+    // Planet occlusion: if ray hits planet in forward direction, sun is blocked
+    float2 intersection = RaySphereIntersection(P, sunDir, planetCenter, planetRadius);
+    if (intersection.x > 0.0)
+        return float2(1e20, 1e20);
+
+    // Ray to atmosphere exit
+    intersection = RaySphereIntersection(P, sunDir, planetCenter, atmosphereRadius);
+    float3 rayEnd = P + sunDir * intersection.y;
+
+    // Compute optical depth along the ray
+    float3 step = (rayEnd - P) / float(sampleCount);
+    float stepSize = length(step);
+    float2 density = 0;
+
+    for (float s = 0.5; s < float(sampleCount); s += 1.0)
+    {
+        float3 position = P + step * s;
+        float height = abs(length(position - planetCenter) - planetRadius);
+        float2 localDensity = exp(-height / densityScaleHeight);
+        density += localDensity * stepSize;
+    }
+
+    return density;
+}
+
+// ── Main Kernel ───────────────────────────────────────────────────────
+// LUT axes:
+//   U: cos(sun zenith)      [-1, 1] → mapped to [0, 1]
+//   V: height above ground  [0, atmosphereRadius - planetRadius]
+//
+// sun zenith = angle between (P→planetCenter) and (P→sun)
+//   μ_sun = +1 → sun straight up    (shortest path to space)
+//   μ_sun = -1 → sun straight down  (occluded by planet)
+// 考虑p的方向为（0，1，0）即可，因为大气层具有球对称性，该方向的所有夹角 == 其他径向方向的所有夹角，保证夹角相同即可
+[numthreads(8, 8, 1)]
+void ComputeOpticalDepthLUT(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= LUT_SIZE || id.y >= LUT_SIZE) return;
+
+    float3 planetCenter = float3(0.0, 0.0, 0.0);
+
+    // μ_sun: [-1, 1] → [0, 1]  (U axis)
+    float mu = ((id.x + 0.5) * _InvLUTSize) * 2.0 - 1.0; // [-1, 1]
+
+    // Height: 0 → ground, maxHeight → atmosphere top  (V axis)
+    float maxHeight = _AtmosphereRadius - _PlanetRadius;
+    float height = (id.y + 0.5) * _InvLUTSize * maxHeight;
+    float r = _PlanetRadius + height;
+
+    // P at (0, r, 0), radial direction = (0, 1, 0)
+    float3 P = float3(0.0, r, 0.0);
+
+    // μ = dot(SunDir, RadialDir)
+    // set Radial direction = (0, 1, 0)
+    // sunDir such that dot(sunDir, (0,1,0)) = mu
+    float sinTheta = sqrt(max(0.0, 1.0 - mu * mu));
+    float3 sunDir = float3(sinTheta, mu, 0.0);
+
+    float scaleHeightM = _MieScaleHeight;
+
+    float2 tau = ComputeOpticalDepthToAtmTop(
+        P, sunDir, planetCenter,
+        _PlanetRadius, _AtmosphereRadius,
+        _ScaleHeight, scaleHeightM,
+        (int)_LightSamples);
+
+    _OpticalDepthLUT[id.xy] = tau;
+}

@@ -1,0 +1,157 @@
+// Aerial Perspective LUT Generator — Compute Shader
+// Voxelizes the camera frustum into a 128×72×64 3D texture.
+// Each voxel integrates in-scattering from camera to its depth slice.
+//
+// Thread structure: [numthreads(8,8,8)], dispatch 16×9×8
+// One thread per voxel. Sample count scales: near=2, far=128.
+// Analytical integration: Frostbite 2015 slide 28.
+
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel ComputeAerialPerspectiveLUT
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+#define LUT_WIDTH  128
+#define LUT_HEIGHT 72
+#define NUM_SLICES 64
+
+#define ATM_SUN_DISK
+#define ATM_MULTI_SCATTERING
+
+// ── Input textures ──────────────────────────────────────────────────────
+Texture2D<float2> _OpticalDepthLUT;
+SamplerState sampler_OpticalDepthLUT;
+Texture2D<float4> _MultiScatteringLUT;
+SamplerState sampler_MultiScatteringLUT;
+
+// ── Output ──────────────────────────────────────────────────────────────
+RWTexture3D<float4> _AerialPerspectiveLUT;
+
+#include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
+
+float AerialPerspectiveDepthToSlice(float depth)
+{
+    return depth * (1.0f / AP_METERS_PER_SLICE);
+}
+
+float AerialPerspectiveSliceToDepth(float slice)
+{
+    return slice * AP_METERS_PER_SLICE;
+}
+
+// ── Frustum Ray Reconstruction ──────────────────────────────────────────
+float3 FrustumViewDir(uint2 threadId)
+{
+    float2 uv = (float2(threadId) + 0.5) / float2(LUT_WIDTH, LUT_HEIGHT);
+    #if UNITY_UV_STARTS_AT_TOP
+    uv.y = 1.0 - uv.y;
+    #endif
+    float4 clipPos = float4(uv.xy * 2.0 - 1.0, 1.0, 1.0);
+    float4 viewPos = mul(_InvProjectionMatrix, clipPos);
+    viewPos /= viewPos.w;
+    return normalize(mul((float3x3)_InvCameraViewMatrix, viewPos.xyz));
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// Main kernel — one thread per voxel
+// ═════════════════════════════════════════════════════════════════════════
+[numthreads(8, 8, 8)]
+void ComputeAerialPerspectiveLUT(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= LUT_WIDTH || id.y >= LUT_HEIGHT || id.z >= NUM_SLICES) return;
+
+    float3 viewDir = FrustumViewDir(id.xy);
+    float3 worldCam = _WorldSpaceCameraPos + float3(0, _PlanetRadius, 0);
+    float3 planetCenter = float3(0, 0, 0);
+    float atmosphereRadius = _PlanetRadius + _AtmosphereHeight;
+    float3 sunDir = normalize(_SunDirection);
+
+    float slice = ((id.z + 0.5f) / NUM_SLICES);
+    slice *= slice;
+    slice *= NUM_SLICES;
+
+    float tMax = AerialPerspectiveSliceToDepth(slice);
+    float3 positionWS = worldCam + viewDir * tMax;
+
+    float viewHeight = length(positionWS);
+    if (viewHeight <= _PlanetRadius + PLANET_RADIUS_OFFSET)
+    {
+        positionWS = normalize(positionWS) * (_PlanetRadius + PLANET_RADIUS_OFFSET + 0.001f);
+        viewDir = normalize(positionWS - worldCam);
+        tMax = length(positionWS - worldCam);
+    }
+
+    float tMaxMax = tMax;
+    float tBottom = RaySphereIntersectNearest(worldCam, viewDir, planetCenter, _PlanetRadius);
+    float tTop = RaySphereIntersectNearest(worldCam, viewDir, planetCenter, atmosphereRadius);
+    tMax = 0.0f;
+    if (tBottom < 0.0f)
+    {
+        if (tTop < 0.0f)
+        {
+            tMax = 0.0f; // No intersection with earth nor atmosphere: stop right away  
+            _AerialPerspectiveLUT[id.xyz] = float4(0, 0, 0, 1);
+            return;
+        }
+        tMax = tTop;
+    }
+    else
+    {
+        if (tTop > 0.0f)
+        {
+            tMax = min(tTop, tBottom);
+        }
+    }
+    tMax = min(tMax, tMaxMax);
+    int sampleCount = max(1, (int(id.z) + 1) * 2);
+    float dt = tMax / sampleCount;
+
+    // ── Integrate ───────────────────────────────────────────────────────
+    float3 L = float3(0, 0, 0);
+    float3 throughput = float3(1, 1, 1);
+    float t = 0.0f;
+    float cosTheta = dot(viewDir, sunDir);
+    const float sampleSegmentT = 0.5f;
+    for (int i = 0; i < sampleCount; i += 1)
+    {
+        float newT = tMax * (i + sampleSegmentT) / sampleCount;
+        dt = newT - t;
+        t = newT;
+        float3 P = worldCam + viewDir * t;
+        float height = length(P - planetCenter) - _PlanetRadius;
+
+        float3 extinction = kRayleighScattering * exp(-height / _ScaleHeight)
+            + kMieScattering * exp(-height / _MieScaleHeight);
+
+        const float3 sampleOpticalDepth = extinction * dt;
+        const float3 sampleT = exp(-sampleOpticalDepth);
+
+        // For underground sections, the "up" direction (planet-center to surface
+        // point) is the same as for above-ground: radially outward from center
+        float3 upDir = normalize(P - planetCenter);
+        float cosSunZenith = dot(upDir, sunDir);
+        float3 T_sun = GetTransmittanceToSun(height, cosSunZenith);
+
+        float3 J = EvaluateInScattering(height, cosTheta, _MieG);
+        float3 ms = GetMultiScattering(height, cosSunZenith);
+
+        // Earth shadow: for underground samples, project to the planet surface
+        // (nudged outward to avoid self-intersection) and check shadow there.
+        // This preserves sunlight contribution for elevated terrain (mountains)
+        // that are above the planet surface along this view direction.
+        float tEarth = RaySphereIntersectNearest(P, sunDir, planetCenter + upDir * PLANET_RADIUS_OFFSET, _PlanetRadius);
+        float earthShadow = tEarth >= 0.0 ? 0.0 : 1.0;
+
+        float3 S = _SunIntensity * _SunLightColor
+            * (earthShadow * T_sun * J + ms);
+
+        float3 Sint = (S - S * sampleT) / max(extinction, 1e-6);
+        L += throughput * Sint;
+        throughput *= sampleT;
+    }
+
+    float T = dot(throughput, float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0));
+    _AerialPerspectiveLUT[id.xyz] = float4(L, 1 - T);
+}
