@@ -1,0 +1,182 @@
+// GPU-Driven Static Occlusion Culling — Frustum + Hi-Z.
+// 深度约定：GPU 投影矩阵（GL.GetGPUProjectionMatrix），reversed-Z，near=1/far=0
+#pragma enable_d3d11_debug_symbols
+#pragma only_renderers d3d11 vulkan metal
+#pragma kernel CSStaticOcclusionCull
+
+StructuredBuffer<float4> _OccludeeBounds;
+RWStructuredBuffer<uint> _OccludeeVisibility;
+uint _OccludeeCount;
+
+float4x4 _CullingVP; // View-Projection，GPU 约定（reversed-Z）；bounds 已是世界空间，无 M
+float4 _FrustumOcclusionParams;
+#define FRUSTUM_OFFSET       _FrustumOcclusionParams.x
+#define OCCLUSION_DEPTH_BIAS _FrustumOcclusionParams.y
+#define OCCLUSION_ACCURACY   _FrustumOcclusionParams.z
+#define RECT_PADDING         _FrustumOcclusionParams.w // UV 坐标扩边（与深度 bias 拆开，量纲不同）
+
+Texture2D<float> _HiZDepth;
+SamplerState sampler_PointClamp;
+uint _DebugMode; // 0=full, 1=frustum-only, 2=occlusion-only
+
+// ---- Frustum ----
+// GPU 投影约定：x,y ∈ [-w,w]，z ∈ [0,w]（reversed-Z：near=w，far=0）
+bool IsFrustumCulled(float4 box[8])
+{
+    for (int axis = 0; axis < 3; axis++)
+    {
+        float lowerScale = (axis == 2) ? 0.0 : 1.0; // z 下界是 0，x/y 下界是 -w
+        bool allOut = true;
+        for (int i = 0; i < 8; i++)
+            if (box[i][axis] <= box[i].w + FRUSTUM_OFFSET)
+            {
+                allOut = false;
+                break;
+            }
+        if (allOut) return true;
+        allOut = true;
+        for (int j = 0; j < 8; j++)
+            if (box[j][axis] >= -box[j].w * lowerScale - FRUSTUM_OFFSET)
+            {
+                allOut = false;
+                break;
+            }
+        if (allOut) return true;
+    }
+    return false;
+}
+
+// ---- UV bounding rect ([0,1] 屏幕空间) ----
+float4 ComputeBoundingRect(float4 box[8])
+{
+    float minX = 1e10, maxX = -1e10, minY = 1e10, maxY = -1e10;
+    for (int i = 0; i < 8; i++)
+    {
+        float3 ndc = box[i].xyz / box[i].w;
+        float2 uv = ndc.xy * 0.5 + 0.5;
+        minX = min(minX, uv.x);
+        maxX = max(maxX, uv.x);
+        minY = min(minY, uv.y);
+        maxY = max(maxY, uv.y);
+    }
+    return float4(minX, minY, maxX, maxY);
+}
+
+// ---- Hi-Z occlusion (standard mip chain → SampleLevel) ----
+// Hi-Z 与 instanceNearestDepth 同为 reversed-Z（near=1/far=0），无需翻转
+float HiZSample(float2 uv, float lod) { return _HiZDepth.SampleLevel(sampler_PointClamp, uv, lod); }
+
+
+bool IsOcclusionCulled(float4 rect, float instanceNearestDepth, uint hiZSize)
+{
+    float texelW = (rect.z - rect.x) * hiZSize;
+    float texelH = (rect.w - rect.y) * hiZSize;
+
+    float maxLod = log2(hiZSize);
+    float lod = clamp(ceil(log2(max(texelW, texelH) / max(1.0, OCCLUSION_ACCURACY * 2))), 0, maxLod);
+
+    float off = RECT_PADDING * 0.5;
+    float4 rc = float4(
+        max(0, rect.x - off), max(0, rect.y - off),
+        min(1, rect.z + off), min(1, rect.w + off));
+
+    float hw = (rc.z - rc.x) * 0.5, hh = (rc.w - rc.y) * 0.5;
+    float cx = rc.x + hw, cy = rc.y + hh;
+
+    // reversed-Z：值越小越远，取样本最小值 = rect 内最远遮挡深度
+    float sceneFarthestDepth = 1;
+    sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx, cy), lod));
+    sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(rc.x, rc.y), lod));
+    sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(rc.z, rc.y), lod));
+    sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(rc.x, rc.w), lod));
+    sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(rc.z, rc.w), lod));
+
+    if (OCCLUSION_ACCURACY >= 2)
+    {
+        float qx = hw * 0.5, qy = hh * 0.5;
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx - qx, cy - qy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx + qx, cy - qy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx - qx, cy + qy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx + qx, cy + qy), lod));
+    }
+    if (OCCLUSION_ACCURACY >= 3)
+    {
+        float sx = hw * 0.25, sy = hh * 0.25;
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx - sx, cy - sy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx + sx, cy - sy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx - sx, cy + sy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx + sx, cy + sy), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx - sx * 3, cy - sy * 3), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx + sx * 3, cy - sy * 3), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx - sx * 3, cy + sy * 3), lod));
+        sceneFarthestDepth = min(sceneFarthestDepth, HiZSample(float2(cx + sx * 3, cy + sy * 3), lod));
+    }
+
+    // 物体最近点仍比 rect 内最远遮挡深度更远（reversed-Z 下更小）→ 被遮挡
+    return instanceNearestDepth < sceneFarthestDepth - OCCLUSION_DEPTH_BIAS;
+}
+
+// ---- Clip-space 8-point AABB ----
+void CalculateBoundingBox(float3 center, float3 extents, out float4 box[8])
+{
+    float3 mn = center - extents, mx = center + extents;
+    box[0] = mul(_CullingVP, float4(mn.x, mx.y, mn.z, 1));
+    box[1] = mul(_CullingVP, float4(mn.x, mx.y, mx.z, 1));
+    box[2] = mul(_CullingVP, float4(mx.x, mx.y, mx.z, 1));
+    box[3] = mul(_CullingVP, float4(mx.x, mx.y, mn.z, 1));
+    box[4] = mul(_CullingVP, float4(mx.x, mn.y, mn.z, 1));
+    box[5] = mul(_CullingVP, float4(mx.x, mn.y, mx.z, 1));
+    box[6] = mul(_CullingVP, float4(mn.x, mn.y, mx.z, 1));
+    box[7] = mul(_CullingVP, float4(mn.x, mn.y, mn.z, 1));
+}
+
+// ---- Main ----
+[numthreads(64, 1, 1)]
+void CSStaticOcclusionCull(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _OccludeeCount) return;
+    // Stride: (center F4, extent F4)
+    float4 d0 = _OccludeeBounds[id.x * 2];
+    float4 d1 = _OccludeeBounds[id.x * 2 + 1];
+    float3 center = d0.xyz;
+    float3 extents = d1.xyz;
+
+    float4 box[8];
+    CalculateBoundingBox(center, extents, box);
+    bool frustumPass = !IsFrustumCulled(box);
+
+    if (_DebugMode == 1) // frustum only
+    {
+        _OccludeeVisibility[id.x] = frustumPass ? 1u : 0u;
+        return;
+    }
+
+    if (!frustumPass)
+    {
+        _OccludeeVisibility[id.x] = 0;
+        return;
+    }
+
+    uint hiZSize;
+    _HiZDepth.GetDimensions(hiZSize, hiZSize);
+
+    // _DebugMode 0 or 2: run occlusion
+    float4 rect = ComputeBoundingRect(box);
+    // 相机在包围盒内：某角点 w<0 导致 z/w 越界 → 保守不过滤，直接标记可见
+    float instanceNearestDepth = 0;
+    float instanceFarthestDepth = 1;
+    for (int i = 0; i < 8; i++)
+    {
+        float d = box[i].z / box[i].w;
+        instanceNearestDepth = max(instanceNearestDepth, d);
+        instanceFarthestDepth = min(instanceFarthestDepth, d);
+    }
+    if (instanceNearestDepth > 1.0 || instanceFarthestDepth < 0.0)
+    {
+        _OccludeeVisibility[id.x] = 1;
+        return;
+    }
+
+    bool occluded = IsOcclusionCulled(rect, instanceNearestDepth, hiZSize);
+    _OccludeeVisibility[id.x] = occluded ? 0u : 1u;
+}

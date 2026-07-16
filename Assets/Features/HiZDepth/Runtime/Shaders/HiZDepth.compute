@@ -1,0 +1,65 @@
+// Hi-Z Depth Pyramid — GPUI-style standard mip chain.
+
+#pragma enable_d3d11_debug_symbols
+#pragma only_renderers d3d11 vulkan metal
+
+#pragma kernel KClear
+#pragma kernel KDepthCopy
+#pragma kernel KDepthReduce
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+
+RWTexture2D<float> _HiZDepthMipN;
+RWTexture2D<float> _HiZDepthSource;
+
+uint _HiZTextureSize;    // 完整 PoT 纹理尺寸（KClear / KDepthCopy 用）
+uint _HiZDstMipSize;     // 目标 mip 尺寸（KDepthReduce 用）
+uint2 _HiZViewportSize;  // 相机像素尺寸，UV→源像素的缩放因子
+int _ReverseZ;
+
+// KDepthCopy 已把纹理统一归一为 near=1/far=0（所有平台），
+// 遮挡剔除需要每 tile 的最远深度（保守剔除）→ 无条件取 min
+#define FARTHEST_DEPTH(a, b) min(a, b)
+
+[numthreads(8, 8, 1)]
+void KClear(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _HiZTextureSize || id.y >= _HiZTextureSize) return;
+    _HiZDepthMipN[id.xy] = 0;
+}
+
+[numthreads(8, 8, 1)]
+void KDepthCopy(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _HiZTextureSize || id.y >= _HiZTextureSize) return;
+
+    // Map Hi-Z pixel → UV → viewport pixel
+    float2 uv = (id.xy + 0.5) / _HiZTextureSize;
+    uint2 src = uint2(uv * _HiZViewportSize);
+    float depth = _CameraDepthTexture[src].r;
+    if (_ReverseZ == 0) depth = 1.0 - depth;
+    _HiZDepthMipN[id.xy] = depth;
+}
+
+[numthreads(8, 8, 1)]
+void KDepthReduce(uint3 id : SV_DispatchThreadID)
+{
+    uint dstSize = _HiZDstMipSize;
+    if (id.x >= dstSize || id.y >= dstSize) return;
+
+    uint2 src = id.xy << 1;
+    uint srcLimit = dstSize * 2 - 1;
+
+    float c00 = _HiZDepthSource[min(src + uint2(0, 0), srcLimit)];
+    float c10 = _HiZDepthSource[min(src + uint2(1, 0), srcLimit)];
+    float c01 = _HiZDepthSource[min(src + uint2(0, 1), srcLimit)];
+    float c11 = _HiZDepthSource[min(src + uint2(1, 1), srcLimit)];
+
+    float farthestDepth = FARTHEST_DEPTH(FARTHEST_DEPTH(c00, c10), FARTHEST_DEPTH(c01, c11));
+    // float center = (c00 + c10 + c01 + c11) * 0.25;
+    // farthestDepth = FARTHEST_DEPTH(farthestDepth, center);
+
+    _HiZDepthMipN[id.xy] = farthestDepth;
+}
+
+#undef FARTHEST_DEPTH
