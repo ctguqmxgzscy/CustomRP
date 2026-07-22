@@ -1,0 +1,88 @@
+// Grass Instance Generation — density → instances (no culling)
+#pragma enable_d3d11_debug_symbols
+#pragma only_renderers d3d11 vulkan metal
+#pragma kernel CSGenerateInstances
+
+struct ProtoDesc
+{
+    int   densityWidth, densityHeight;
+    float terrainWidth, terrainHeight, terrainHeightY;
+    float terrainPosX, terrainPosY, terrainPosZ;
+    float minWidth, maxWidth, minHeight, maxHeight, noiseSpread;
+    int   renderMode;
+    uint  densityOffset, instanceOffset;
+    float healthyColorR, dryColorR;
+    int   meshIndex;
+};
+
+StructuredBuffer<float>      _DensityBuffer;
+StructuredBuffer<ProtoDesc>  _ProtoDescs;
+Texture2D<float>             _TerrainHeightmap;
+SamplerState                 sampler_LinearClamp;
+
+RWStructuredBuffer<float4>  _InstanceOutput; // [i*2]=pos+width, [i*2+1]=height+rotY
+RWStructuredBuffer<uint>    _GenCounter;     // uint[1] — generated count
+
+uint  _CurrentProtoIndex;
+uint  _MaxInstances;
+float _DensityScale;
+
+float Hash(uint s) {
+    s = (s ^ 61u) ^ (s >> 16u);
+    s *= 9u; s = s ^ (s >> 4u);
+    s *= 0x27d4eb2du; s = s ^ (s >> 15u);
+    return float(s) / float(0xFFFFFFFFu);
+}
+
+[numthreads(1, 1, 1)]
+void CSClearGenCounter(uint3 id : SV_GroupID) { _GenCounter[0] = 0; }
+
+[numthreads(64, 1, 1)]
+void CSGenerateInstances(uint3 id : SV_DispatchThreadID)
+{
+    uint protoIdx = _CurrentProtoIndex;
+    ProtoDesc proto = _ProtoDescs[protoIdx];
+
+    uint totalTexels = (uint)(proto.densityWidth * proto.densityHeight);
+    uint texelIdx = id.x;
+    if (texelIdx >= totalTexels) return;
+
+    uint baseOffset = proto.densityOffset;
+    float densityVal = _DensityBuffer[baseOffset + texelIdx] * _DensityScale;
+    if (densityVal < 0.001f) return;
+
+    int guaranteed = (int)densityVal;
+    float f = densityVal - (float)guaranteed;
+    int count = guaranteed;
+    if (f > 0.001f && Hash(baseOffset + texelIdx) < f) count++;
+    if (count == 0) return;
+
+    uint dstIdx;
+    InterlockedAdd(_GenCounter[0], (uint)count, dstIdx);
+
+    for (int i = 0; i < count; i++)
+    {
+        uint idx = dstIdx + (uint)i;
+        if (idx >= _MaxInstances) return;
+
+        int tx = (int)(texelIdx % proto.densityWidth);
+        int ty = (int)(texelIdx / proto.densityWidth);
+
+        float u = ((float)tx + Hash(texelIdx * 7919u + (uint)i)) / proto.densityWidth;
+        float v = ((float)ty + Hash(texelIdx * 6271u + (uint)i + 1u)) / proto.densityHeight;
+
+        float worldX = proto.terrainPosX + u * proto.terrainWidth;
+        float worldZ = proto.terrainPosZ + v * proto.terrainHeight;
+        float hSample = _TerrainHeightmap.SampleLevel(sampler_LinearClamp, float2(u, v), 0);
+        float worldY = proto.terrainPosY + hSample * 2.0 * proto.terrainHeightY;
+
+        float w = lerp(proto.minWidth, proto.maxWidth, Hash(texelIdx * 3137u + (uint)i * 13u));
+        float h = lerp(proto.minHeight, proto.maxHeight, Hash(texelIdx * 4409u + (uint)i * 17u));
+        float rotY = proto.renderMode == 1
+            ? Hash(texelIdx * 5501u + (uint)i * 19u) * 6.283185f : 0.0;
+
+        uint o = idx * 2;
+        _InstanceOutput[o + 0] = float4(worldX, worldY, worldZ, w);
+        _InstanceOutput[o + 1] = float4(h, rotY, 0, 0);
+    }
+}

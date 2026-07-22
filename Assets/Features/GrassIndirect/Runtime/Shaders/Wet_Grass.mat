@@ -1,0 +1,60 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: Wet_Grass
+  m_Shader: {fileID: 4800000, guid: 505ef1c08eb1c0944ad18449a600c8ee, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _BaseMap:
+        m_Texture: {fileID: 2800000, guid: 412b937bd5aa5024183fef71e9cf1042, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MaskMap:
+        m_Texture: {fileID: 2800000, guid: e9a1c1b060b9b2c4989233f1037f9d5d, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _NormalMap:
+        m_Texture: {fileID: 2800000, guid: 9a1568052101f2f48ba76e7342adc3f3, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _ThicknessMap:
+        m_Texture: {fileID: 2800000, guid: 5bdbe53dce2414e458937234dce49479, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _Cutoff: 0.5
+    - _GrassWater: 0.4
+    - _NormalScale: 1
+    - _SSSIntensity: 1.5
+    - _SSSRadius: 0.7
+    - _SpecularSmoothness: 0.5
+    - _TransExp: 2
+    - _TransIntensity: 5
+    - _TransLerp: 0.9
+    - _UsePBRLighting: 0
+    m_Colors:
+    - _BaseColor: {r: 0.588722, g: 0.8773585, b: 0.5007565, a: 1}
+    - _HighlightColor: {r: 0.7137355, g: 1, b: 0.36320752, a: 1}
+    - _ShadowColor: {r: 0.064417936, g: 0.13207549, b: 0.019312924, a: 1}
+    - _SpecularColor: {r: 1, g: 1, b: 1, a: 1}
+    - _TipColor: {r: 0.31635618, g: 0.5943396, b: 0.12615702, a: 1}
+  m_BuildTextureStacks: []

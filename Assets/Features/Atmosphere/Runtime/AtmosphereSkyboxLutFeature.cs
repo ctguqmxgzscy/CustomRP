@@ -30,6 +30,8 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
 
     [SerializeField] private ComputeShader m_AerialPerspectiveLutCompute;
 
+    [SerializeField] private ComputeShader m_SHConvolutionCompute;
+
     [SerializeField] private Shader m_AerialPerspectiveCompositeShader;
 
     [Header("Skybox (optional)")] [Tooltip("If set, auto-assigned to RenderSettings.skybox.")] [SerializeField]
@@ -53,6 +55,7 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             skyViewLutCompute = m_SkyViewLutCompute,
             multiScatteringLutCompute = m_MultiScatteringLutCompute,
             aerialPerspectiveLutCompute = m_AerialPerspectiveLutCompute,
+            shConvolutionCompute = m_SHConvolutionCompute,
             skyboxMaterial = m_SkyboxMaterial
         };
 
@@ -191,6 +194,12 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
         private int m_AerialPerspectiveKernel;
         private RTHandle m_AerialPerspectiveLut;
 
+        public ComputeShader shConvolutionCompute;
+        private int m_SHTileKernel, m_SHMergeKernel;
+        private ComputeBuffer m_AtmosphereSHBuffer; // 9 float4s
+        private ComputeBuffer m_TileSHBuffer;       // tile partial results
+        private static readonly int s_AtmosphereSHId = Shader.PropertyToID("_AtmosphereSH");
+
         private bool m_Initialized;
         private int m_MultiScatteringKernel;
         private RTHandle m_MultiScatteringLut;
@@ -217,6 +226,10 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             m_MultiScatteringLut = null;
             m_AerialPerspectiveLut?.Release();
             m_AerialPerspectiveLut = null;
+            m_AtmosphereSHBuffer?.Release();
+            m_AtmosphereSHBuffer = null;
+            m_TileSHBuffer?.Release();
+            m_TileSHBuffer = null;
             m_Initialized = false;
         }
 
@@ -229,6 +242,20 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
                 m_MultiScatteringKernel =
                     multiScatteringLutCompute.FindKernel("ComputeMultiScatteringLut");
             m_SkyViewKernel = skyViewLutCompute.FindKernel("ComputeSkyViewLut");
+
+            if (shConvolutionCompute != null)
+            {
+                m_SHTileKernel = shConvolutionCompute.FindKernel("CSTileSH");
+                m_SHMergeKernel = shConvolutionCompute.FindKernel("CSMergeSH");
+                m_AtmosphereSHBuffer?.Release();
+                m_AtmosphereSHBuffer = new ComputeBuffer(9, 4 * 4, ComputeBufferType.Structured);
+                // Tile buffer: ceil(LutW/16) × ceil(LutH/16) × 9 float4
+                int tilesX = (k_SkyViewLutWidth  + 15) / 16;
+                int tilesY = (k_SkyViewLutHeight + 15) / 16;
+                int tileCount = tilesX * tilesY;
+                m_TileSHBuffer?.Release();
+                m_TileSHBuffer = new ComputeBuffer(tileCount * 9, 4 * 4, ComputeBufferType.Structured);
+            }
 
             RenderingUtils.ReAllocateIfNeeded(
                 ref m_OpticalDepthLut, s_OpticalDepthLutDesc,
@@ -423,7 +450,89 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             cmd.SetGlobalVector(s_SunDirectionId, sunDir);
             cmd.SetGlobalFloat(s_zFarPropId, 100000f);
 
+            // ── 5b. SH Convolution: SkyViewLut → spherical harmonics ─────
+            if (shConvolutionCompute != null
+                && m_AtmosphereSHBuffer != null
+                && m_TileSHBuffer != null)
+            {
+                int tilesX = (k_SkyViewLutWidth  + 15) / 16;
+                int tilesY = (k_SkyViewLutHeight + 15) / 16;
+                int tileCount = tilesX * tilesY;
+
+                // Stage 1: per-tile parallel reduction
+                cmd.SetComputeTextureParam(shConvolutionCompute, m_SHTileKernel,
+                    "_SkyViewLut", m_SkyViewLut);
+                cmd.SetComputeIntParam(shConvolutionCompute, "_LutWidth",  k_SkyViewLutWidth);
+                cmd.SetComputeIntParam(shConvolutionCompute, "_LutHeight", k_SkyViewLutHeight);
+                cmd.SetComputeBufferParam(shConvolutionCompute, m_SHTileKernel,
+                    "_TileSH", m_TileSHBuffer);
+                cmd.DispatchCompute(shConvolutionCompute, m_SHTileKernel, tilesX, tilesY, 1);
+
+                // Stage 2: merge tile results → final SH coefficients
+                cmd.SetComputeBufferParam(shConvolutionCompute, m_SHMergeKernel,
+                    "_TileSH", m_TileSHBuffer);
+                cmd.SetComputeBufferParam(shConvolutionCompute, m_SHMergeKernel,
+                    "_AtmosphereSH", m_AtmosphereSHBuffer);
+                cmd.SetComputeIntParam(shConvolutionCompute, "_LutWidth",  k_SkyViewLutWidth);
+                cmd.SetComputeIntParam(shConvolutionCompute, "_LutHeight", k_SkyViewLutHeight);
+                cmd.SetComputeIntParam(shConvolutionCompute, "_TileCount",  tileCount);
+                cmd.DispatchCompute(shConvolutionCompute, m_SHMergeKernel, 1, 1, 1);
+            }
+
             context.ExecuteCommandBuffer(cmd);
+
+            // ── 5c. Read SH back and overwrite Unity ambient probe ─────────
+            if (shConvolutionCompute != null && m_AtmosphereSHBuffer != null)
+            {
+                var coeff = new Vector4[9];
+                m_AtmosphereSHBuffer.GetData(coeff);
+
+                // Unity SH packing — matches PackSH() in SphericalHarmonics.hlsl:
+                //   shAr = (c3, c1, c2, c0-c6)   shBr = (c4, c5, 3*c6, c7)
+                //   shAg = (c3, c1, c2, c0-c6)   shBg = (c4, c5, 3*c6, c7)
+                //   shAb = (c3, c1, c2, c0-c6)   shBb = (c4, c5, 3*c6, c7)
+                //   shC  = (c8.r, c8.g, c8.b, 1)
+                // Reconstruction: SHEvalLinearL0L1 + SHEvalLinearL2
+
+                var shAr = new Vector4(
+                    coeff[3].x, coeff[1].x, coeff[2].x,
+                    coeff[0].x - coeff[6].x);
+                var shAg = new Vector4(
+                    coeff[3].y, coeff[1].y, coeff[2].y,
+                    coeff[0].y - coeff[6].y);
+                var shAb = new Vector4(
+                    coeff[3].z, coeff[1].z, coeff[2].z,
+                    coeff[0].z - coeff[6].z);
+
+                var shBr = new Vector4(
+                    coeff[4].x, coeff[5].x, coeff[6].x * 3f, coeff[7].x);
+                var shBg = new Vector4(
+                    coeff[4].y, coeff[5].y, coeff[6].y * 3f, coeff[7].y);
+                var shBb = new Vector4(
+                    coeff[4].z, coeff[5].z, coeff[6].z * 3f, coeff[7].z);
+
+                var shC = new Vector4(
+                    coeff[8].x, coeff[8].y, coeff[8].z, 1f);
+
+                // Overwrite Unity ambient probe (works for standard shaders)
+                Shader.SetGlobalVector("unity_SHAr", shAr);
+                Shader.SetGlobalVector("unity_SHAg", shAg);
+                Shader.SetGlobalVector("unity_SHAb", shAb);
+                Shader.SetGlobalVector("unity_SHBr", shBr);
+                Shader.SetGlobalVector("unity_SHBg", shBg);
+                Shader.SetGlobalVector("unity_SHBb", shBb);
+                Shader.SetGlobalVector("unity_SHC",  shC);
+
+                // Also set as custom globals for shaders that can't read
+                // UnityPerDraw CBUFFER (e.g. DrawMeshInstancedIndirect).
+                Shader.SetGlobalVector("_AtmoSHAr", shAr);
+                Shader.SetGlobalVector("_AtmoSHAg", shAg);
+                Shader.SetGlobalVector("_AtmoSHAb", shAb);
+                Shader.SetGlobalVector("_AtmoSHBr", shBr);
+                Shader.SetGlobalVector("_AtmoSHBg", shBg);
+                Shader.SetGlobalVector("_AtmoSHBb", shBb);
+                Shader.SetGlobalVector("_AtmoSHC",  shC);
+            }
             CommandBufferPool.Release(cmd);
 
             // ── Auto-assign skybox material (once) ────────────────────────
