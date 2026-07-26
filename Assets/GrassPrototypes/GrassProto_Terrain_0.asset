@@ -1,0 +1,36 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1dc83bd60c94f2849aa245953513bfdf, type: 3}
+  m_Name: GrassProto_Terrain_0
+  m_EditorClassIdentifier: 
+  mesh: {fileID: 4300000, guid: c8542799e804ef04eb35ba93777008a8, type: 2}
+  material: {fileID: 2100000, guid: 2151cc9275fadbd4aad0cd9a9cc034dc, type: 2}
+  mats: []
+  subMeshIndex: 0
+  instanceCount: 13377
+  densityMultiplier: 0.151
+  minWidth: 4
+  maxWidth: 8
+  minHeight: 4
+  maxHeight: 8
+  noiseSpread: 0.213
+  isVertexLit: 1
+  terrainProtoIndex: 0
+  densityWidth: 1024
+  densityHeight: 1024
+  capacity: 125225
+  center: {x: 0, y: 0, z: 0}
+  randomInstanceNum: 5000
+  distanceMin: 5
+  distanceMax: 50
+  heightMin: -0.5
+  heightMax: 0.5
