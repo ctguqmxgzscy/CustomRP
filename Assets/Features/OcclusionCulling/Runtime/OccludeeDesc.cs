@@ -8,7 +8,7 @@ namespace GPUDrivenOcclusion
 {
     /// <summary>
     /// Per-occludee data registered by the user.
-    /// Holds the renderer reference and world-space bounds used for GPU culling.
+    /// Holds the renderer reference, world-space bounds, and occluder role used for GPU culling.
     /// </summary>
     [Serializable]
     public struct OccludeeDesc
@@ -20,10 +20,15 @@ namespace GPUDrivenOcclusion
         [NonSerialized]
         public Renderer renderer;
 
-        public OccludeeDesc(Renderer renderer)
+        /// <summary>Whether this object contributes depth to Hi-Z (occluder) or is only culled (occludee).</summary>
+        [NonSerialized]
+        public bool isOccluder;
+
+        public OccludeeDesc(Renderer renderer, bool isOccluder = true)
         {
             this.renderer = renderer;
             this.worldBounds = renderer.bounds;
+            this.isOccluder = isOccluder;
         }
 
         public void UpdateBounds()

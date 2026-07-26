@@ -17,9 +17,10 @@ uint _HiZDstMipSize;     // 目标 mip 尺寸（KDepthReduce 用）
 uint2 _HiZViewportSize;  // 相机像素尺寸，UV→源像素的缩放因子
 int _ReverseZ;
 
-// KDepthCopy 已把纹理统一归一为 near=1/far=0（所有平台），
-// 遮挡剔除需要每 tile 的最远深度（保守剔除）→ 无条件取 min
-#define FARTHEST_DEPTH(a, b) min(a, b)
+// Reversed-Z (near=1, far=0): min() = farthest depth per tile.
+// Conservative for occlusion testing — if the farthest occluder in a
+// tile is still closer than the object, the object is definitely behind.
+#define FURTHEST_DEPTH(a, b) min(a, b)
 
 [numthreads(8, 8, 1)]
 void KClear(uint3 id : SV_DispatchThreadID)
@@ -55,11 +56,9 @@ void KDepthReduce(uint3 id : SV_DispatchThreadID)
     float c01 = _HiZDepthSource[min(src + uint2(0, 1), srcLimit)];
     float c11 = _HiZDepthSource[min(src + uint2(1, 1), srcLimit)];
 
-    float farthestDepth = FARTHEST_DEPTH(FARTHEST_DEPTH(c00, c10), FARTHEST_DEPTH(c01, c11));
-    // float center = (c00 + c10 + c01 + c11) * 0.25;
-    // farthestDepth = FARTHEST_DEPTH(farthestDepth, center);
+    float farthestDepth = FURTHEST_DEPTH(FURTHEST_DEPTH(c00, c10), FURTHEST_DEPTH(c01, c11));
 
     _HiZDepthMipN[id.xy] = farthestDepth;
 }
 
-#undef FARTHEST_DEPTH
+#undef FURTHEST_DEPTH

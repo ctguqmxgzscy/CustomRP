@@ -138,6 +138,22 @@ sys.Unregister(movingEnemy.GetComponent<Renderer>());
    - Accuracy=3: 17 samples（+ 8 个附加点）
 5. `instanceNearestDepth < sceneFarthestDepth - OCCLUSION_DEPTH_BIAS` → 遮挡
 
+## Occluder / Occludee 分离
+
+每个注册对象带 `isOccluder` 标记：
+
+| API | isOccluder | 用途 |
+|-----|-----------|------|
+| `Register(r)` | true（默认） | 通用物体，既是遮挡体也是被遮挡物 |
+| `Register(r, isOccluder: false)` | false | 小物体（碎片、道具），只被剔不贡献深度 |
+| `RegisterOccludee(r)` | false | 等效于 `Register(r, false)` |
+| `RegisterOccludeeDynamic(r)` | false + dynamic | 动态小物体 |
+
+- `OccluderCount` / `OccludeeOnlyCount` 属性可查询当前组成
+- 标记在 `OccludeeDesc.isOccluder` 字段持久化
+
+当前 Hi-Z 来自全量 `_CameraDepthTexture`，标记暂为 bookkeeping。深度预通（单独渲染 occluder 到独立深度缓冲再生成 Hi-Z）接入后生效。
+
 ## 可调参数
 
 | 参数 | 默认值 | 说明 |
@@ -157,9 +173,9 @@ sys.Unregister(movingEnemy.GetComponent<Renderer>());
 | 回读延迟 | 结果晚 1-2 帧生效 | 同上 |
 | 视图外区域无 Hi-Z 数据 | 相机旋转后新进入视野的物体可能一度误显 | hideDelayFrames |
 | 仅 reversed-Z 平台 | GL/GLES 不支持 | `#pragma only_renderers d3d11 vulkan metal` |
-| 所有物体既是 occluder 也是 occludee | 大量小物体降低 Hi-Z 精度 | 参见下方 TODO |
+| 所有物体都是 occluder（默认） | 大量小物体降低 Hi-Z 精度 | occluder/occludee 分离 API 已就绪，深度预通待实现 |
 
 ## TODO
 
-- **occluder/occludee 分离**：大物体（墙、地面）写深度到 Hi-Z，小物体（碎片、道具）只被剔除不贡献遮挡。需新增 per-registration 标记、Hi-Z 生成时过滤
+- **深度预通**：只渲染 occluder（`isOccluder=true`）到独立深度缓冲再生成 Hi-Z，occludee-only 不污染金字塔。`m_OccluderIndices` 已追踪，需新增 CommandBuffer 挂载点和 occluder 专用 render layer
 - **间接绘制支持**：大批量 instance（草、植被）不能走 `AsyncGPUReadback → CPU → Renderer.enabled` 路径。需在 culling compute 后新增 GPU 侧输出：读 `_OccludeeVisibility` → 写 `DrawCommand.count` 或 append visible index。关键约束：indirect kernel 必须与 culling 在同一条 CommandBuffer 内同帧执行，`context.Submit()` 一次提交

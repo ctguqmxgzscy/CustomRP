@@ -13,11 +13,12 @@ namespace GPUDrivenOcclusion
     ///     Maintains a pool of occludees, uploads their bounds to GPU,
     ///     dispatches frustum + Hi-Z culling, and reads back visibility results.
     ///     Dynamic occludees have their bounds refreshed every frame.
+    ///     Occluder/occludee separation: occluders (isOccluder=true, default) will
+    ///     contribute depth to Hi-Z when depth pre-pass is implemented;
+    ///     occludees (isOccluder=false) are only culled, never contribute depth.
     ///
-    ///     TODO: occluder/occludee 分离——大物体（墙、地面）写深度到 Hi-Z，
-    ///     小物体（碎片、道具）只被剔除、不贡献遮挡。当前所有物体既是
-    ///     occluder 也是 occludee，静态场景够用，复杂场景需要分层以减少
-    ///     遮挡物数量并提升精度。
+    ///     TODO: 深度预通（depth pre-pass）——只渲染 occluder 物体到独立深度缓冲
+    ///     再生成 Hi-Z，使金字塔只含高质量遮挡体，小物体不污染深度。
     ///
     ///     TODO: 间接绘制（Indirect Draw）支持——草、植被等大批量 instance
     ///     无法走 CPU 回读路径，需新增 GPU 侧输出：culling compute 完成后
@@ -73,6 +74,7 @@ namespace GPUDrivenOcclusion
         private readonly List<int> m_FreeSlots = new(); // recycled slots for fast add/remove
         private readonly Dictionary<int, int> m_RendererToIndex = new(); // instanceID → occludee index
         private readonly HashSet<int> m_DynamicIndices = new(); // which occludee slots need per-frame bounds refresh
+        private readonly HashSet<int> m_OccluderIndices = new(); // which slots contribute depth to Hi-Z
 
         /// <summary>Hi-Z RTHandle from HiZDepthGenerator (standard mip chain).</summary>
         [NonSerialized] public RTHandle hiZHandle;
@@ -104,6 +106,8 @@ namespace GPUDrivenOcclusion
         public static OcclusionCullingSystem Instance { get; private set; }
 
         public int OccludeeCount => m_Occludees.Count - m_FreeSlots.Count;
+        public int OccluderCount => m_OccluderIndices.Count;
+        public int OccludeeOnlyCount => OccludeeCount - OccluderCount;
 
         /// <summary>Editor: get all registered renderers (includes dead slots as null).</summary>
         public Renderer[] GetAllRenderers()
@@ -177,19 +181,28 @@ namespace GPUDrivenOcclusion
         // Registration API
         // -----------------------------------------------------------------
 
-        /// <summary>Register a Renderer for GPU occlusion culling.</summary>
-        public void Register(Renderer r)
+        /// <summary>Register a Renderer for GPU occlusion culling.
+        /// Default isOccluder=true: object contributes depth to Hi-Z (when depth pre-pass is active).</summary>
+        public void Register(Renderer r, bool isOccluder = true)
         {
-            RegisterInternal(r, false);
+            RegisterInternal(r, false, isOccluder);
         }
 
-        /// <summary>Register a dynamic Renderer — bounds refreshed every frame.</summary>
-        public void RegisterDynamic(Renderer r)
+        /// <summary>Register a dynamic Renderer — bounds refreshed every frame.
+        /// Default isOccluder=true.</summary>
+        public void RegisterDynamic(Renderer r, bool isOccluder = true)
         {
-            RegisterInternal(r, true);
+            RegisterInternal(r, true, isOccluder);
         }
 
-        private void RegisterInternal(Renderer r, bool isDynamic)
+        /// <summary>Register an occludee-only Renderer: it is culled but never contributes depth to Hi-Z.
+        /// Use for small objects (debris, props) that cannot meaningfully occlude anything.</summary>
+        public void RegisterOccludee(Renderer r) => RegisterInternal(r, false, false);
+
+        /// <summary>Register a dynamic occludee-only Renderer.</summary>
+        public void RegisterOccludeeDynamic(Renderer r) => RegisterInternal(r, true, false);
+
+        private void RegisterInternal(Renderer r, bool isDynamic, bool isOccluder)
         {
             if (r == null) return;
             var id = r.GetInstanceID();
@@ -200,17 +213,19 @@ namespace GPUDrivenOcclusion
             {
                 index = m_FreeSlots[m_FreeSlots.Count - 1];
                 m_FreeSlots.RemoveAt(m_FreeSlots.Count - 1);
-                m_Occludees[index] = new OccludeeDesc(r);
+                m_Occludees[index] = new OccludeeDesc(r, isOccluder);
             }
             else
             {
                 index = m_Occludees.Count;
-                m_Occludees.Add(new OccludeeDesc(r));
+                m_Occludees.Add(new OccludeeDesc(r, isOccluder));
             }
 
             m_RendererToIndex[id] = index;
             if (isDynamic)
                 m_DynamicIndices.Add(index);
+            if (isOccluder)
+                m_OccluderIndices.Add(index);
             m_BoundsDirty = true;
         }
 
@@ -225,6 +240,7 @@ namespace GPUDrivenOcclusion
             m_FreeSlots.Add(index);
             m_Occludees[index] = default;
             m_DynamicIndices.Remove(index);
+            m_OccluderIndices.Remove(index);
             m_BoundsDirty = true;
 
             // Always re-enable on unregister
