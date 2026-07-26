@@ -20,8 +20,8 @@ StructuredBuffer<ProtoDesc>  _ProtoDescs;
 Texture2D<float>             _TerrainHeightmap;
 SamplerState                 sampler_LinearClamp;
 
-RWStructuredBuffer<float4>  _InstanceOutput; // [i*2]=pos+width, [i*2+1]=height+rotY
-RWStructuredBuffer<uint>    _GenCounter;     // uint[1] — generated count
+RWStructuredBuffer<float4x4> _MatrixBuffer; // TRS matrix per instance
+RWStructuredBuffer<uint>      _GenCounter;  // uint[1] — generated count
 
 uint  _CurrentProtoIndex;
 uint  _MaxInstances;
@@ -34,8 +34,19 @@ float Hash(uint s) {
     return float(s) / float(0xFFFFFFFFu);
 }
 
-[numthreads(1, 1, 1)]
-void CSClearGenCounter(uint3 id : SV_GroupID) { _GenCounter[0] = 0; }
+float4x4 BuildTRS(float3 pos, float rotY, float scaleX, float scaleY)
+{
+    float s = sin(rotY);
+    float c = cos(rotY);
+
+    // Column-major: X basis=(c*scaleX, 0, -s*scaleX), Y basis=(0, scaleY, 0), Z basis=(s, 0, c), translation=pos
+    return float4x4(
+        float4(c * scaleX,  0, -s * scaleX, 0),
+        float4(0,           scaleY, 0,           0),
+        float4(s,           0,  c,           0),
+        float4(pos.x,       pos.y, pos.z,        1)
+    );
+}
 
 [numthreads(64, 1, 1)]
 void CSGenerateInstances(uint3 id : SV_DispatchThreadID)
@@ -81,8 +92,6 @@ void CSGenerateInstances(uint3 id : SV_DispatchThreadID)
         float rotY = proto.renderMode == 1
             ? Hash(texelIdx * 5501u + (uint)i * 19u) * 6.283185f : 0.0;
 
-        uint o = idx * 2;
-        _InstanceOutput[o + 0] = float4(worldX, worldY, worldZ, w);
-        _InstanceOutput[o + 1] = float4(h, rotY, 0, 0);
+        _MatrixBuffer[idx] = transpose(BuildTRS(float3(worldX, worldY, worldZ), rotY, w, h));
     }
 }

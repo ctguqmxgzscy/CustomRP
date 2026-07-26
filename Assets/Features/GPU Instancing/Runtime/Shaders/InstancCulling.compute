@@ -1,0 +1,100 @@
+#pragma enable_d3d11_debug_symbols
+#pragma only_renderers d3d11 vulkan metal
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+#pragma kernel CSCullInstances
+
+int _InstanceCount;
+float _EnableHiZ;
+float _Size;
+float _MaxDrawDistance;
+float3 _CameraPos;
+float4 _Planes[6];
+float4 _Bounds[8];
+
+float4x4 _VPMatrix4x4;
+Texture2D _HiZTexture;
+
+RWStructuredBuffer<float4x4> _MatrixBuffer;
+AppendStructuredBuffer<float4x4> _ValidMatrixBuffer;
+RWStructuredBuffer<uint> _ArgsBuffer;
+
+int GetSide(float4 plane, float3 p)
+{
+    return (dot(plane.xyz, p) + plane.w > 0) ? 1 : 0;
+}
+
+int IsInside(float4 _planes[6], float3 p)
+{
+    int cnt = 0;
+    for (int i = 0; i < 6; i++)
+        cnt += GetSide(_planes[i], p);
+    return cnt == 6 ? 1 : 0;
+}
+
+bool FrustumVisibility(float4 _planes[6], float4 _bounds[8])
+{
+    int cnt = 0;
+    for (int i = 0; i < 8; i++)
+        cnt += IsInside(_planes, _bounds[i]);
+    return cnt > 0;
+}
+
+bool OcclusionVisibility(float4 _bounds[8], float4x4 _vpMatrix, Texture2D _hizBuffer)
+{
+    float4 center = float4(0, 0, 0, 1);
+    float xmax = -1, ymax = -1, xmin = 1, ymin = 1, zmax = -1, zmin = 1;
+    for (int i = 0; i < 8; i++)
+    {
+        float4 ndcBounds = mul(_vpMatrix, _bounds[i]);
+        ndcBounds.xyz /= ndcBounds.w;
+        center.xyz += ndcBounds.xyz;
+
+        xmax = max(xmax, ndcBounds.x);
+        ymax = max(ymax, ndcBounds.y);
+        xmin = min(xmin, ndcBounds.x);
+        ymin = min(ymin, ndcBounds.y);
+        zmax = max(zmax, ndcBounds.z);
+        zmin = min(zmin, ndcBounds.z);
+    }
+    center.xyz /= 8;
+    float2 uv = center.xy * 0.5 + 0.5;
+
+    float boxSize = clamp(max(xmax - xmin, ymax - ymin) * 0.5, 0, 1);
+    int lod = clamp(ceil(log2(boxSize * _Size)), 0, 11);
+
+    uv *= _Size / pow(2.0, (float)lod);
+    float d = _hizBuffer.Load(int3(int2(uv), lod)).r;
+
+    #if defined (UNITY_REVERSED_Z)
+    return d < zmax;
+    #else
+    return d > zmin;
+    #endif
+}
+
+[numthreads(128,1,1)]
+void CSCullInstances(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
+{
+    uint index = gid.x * 128 + gtid.x;
+    if (index >= (uint)_InstanceCount) return;
+
+    float4x4 ObjectToWorld = _MatrixBuffer[index];
+
+    if (ObjectToWorld._m33 == 0) return;
+
+    float3 worldPos = float3(ObjectToWorld._m03, ObjectToWorld._m13, ObjectToWorld._m23);
+    if (distance(worldPos, _CameraPos) > _MaxDrawDistance) return;
+
+    float4 boundsWS[8];
+    for (int i = 0; i < 8; i++)
+        boundsWS[i] = mul(ObjectToWorld, _Bounds[i]);
+
+    if (!FrustumVisibility(_Planes, boundsWS)) return;
+
+    if (_EnableHiZ && !OcclusionVisibility(boundsWS, _VPMatrix4x4, _HiZTexture)) return;
+
+    _ValidMatrixBuffer.Append(ObjectToWorld);
+    InterlockedAdd(_ArgsBuffer[1], 1);
+}

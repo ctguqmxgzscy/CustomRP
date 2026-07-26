@@ -97,9 +97,9 @@ Shader "Custom/GrassIndirect"
                 float4 shadowCoord : TEXCOORD5;
             };
 
-            StructuredBuffer<float4> _GrassInstanceData;
             float4 _WindParams;
             float3 _GrassCameraPos;
+            StructuredBuffer<float4x4> _ValidMatrixBuffer;
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor, _ShadowColor, _HighlightColor, _SpecularColor;
@@ -170,12 +170,13 @@ Shader "Custom/GrassIndirect"
             {
                 Varyings output;
                 uint id = input.instanceID;
-                uint i0 = id * 2;
-                float4 slot0 = _GrassInstanceData[i0];
-                float4 slot1 = _GrassInstanceData[i0 + 1];
-                float3 worldPos = slot0.xyz;
-                float bladeWidth = slot0.w;
-                float bladeHeight = slot1.x;
+
+                float4x4 instanceMatrix = _ValidMatrixBuffer[id];
+                unity_ObjectToWorld = instanceMatrix;
+                unity_WorldToObject = Inverse(instanceMatrix);
+                float3 worldPos = float3(instanceMatrix._m03, instanceMatrix._m13, instanceMatrix._m23);
+                float bladeWidth = length(instanceMatrix._m00_m10_m20);
+                float bladeHeight = length(instanceMatrix._m01_m11_m21);
 
                 float tipFactor = input.positionOS.y;
                 float windWave = sin(_WindParams.w * 2.5 + worldPos.x * 0.3 + worldPos.z * 0.3)

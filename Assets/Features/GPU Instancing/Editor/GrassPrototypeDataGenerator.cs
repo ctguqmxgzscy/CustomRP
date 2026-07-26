@@ -1,13 +1,14 @@
 // Editor tool: reads terrain detail prototypes and generates GrassPrototypeData assets.
 // Select a GrassIndirectRenderer and click "Generate Prototype Assets" in the inspector.
 
+using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
 
-namespace GPUDrivenGrass
+namespace GPUDriven
 {
-    [CustomEditor(typeof(GrassIndirectRenderer))]
+    [CustomEditor(typeof(GPUInstancingRenderer))]
     public class GrassPrototypeDataGenerator : Editor
     {
         public override void OnInspectorGUI()
@@ -18,9 +19,9 @@ namespace GPUDrivenGrass
             EditorGUILayout.LabelField("Prototype Generation", EditorStyles.boldLabel);
 
             if (GUILayout.Button("Generate Prototype Assets from Terrain", GUILayout.Height(30)))
-                GenerateAssets((GrassIndirectRenderer)target);
+                GenerateAssets((GPUInstancingRenderer)target);
 
-            var renderer = (GrassIndirectRenderer)target;
+            var renderer = (GPUInstancingRenderer)target;
             if (renderer.m_Prototypes != null && renderer.m_Prototypes.Count > 0)
             {
                 EditorGUILayout.Space(5);
@@ -28,7 +29,7 @@ namespace GPUDrivenGrass
             }
         }
 
-        private static void GenerateAssets(GrassIndirectRenderer renderer)
+        private static void GenerateAssets(GPUInstancingRenderer renderer)
         {
             var terrains = Terrain.activeTerrains;
             if (terrains == null || terrains.Length == 0)
@@ -45,7 +46,7 @@ namespace GPUDrivenGrass
             Directory.CreateDirectory(outputDir);
 
             var existingProtos = renderer.m_Prototypes;
-            var newList = new System.Collections.Generic.List<GrassPrototypeData>();
+            var newList = new List<InstanceData>();
 
             foreach (var t in terrains)
             {
@@ -54,41 +55,41 @@ namespace GPUDrivenGrass
                 var prototypes = td.detailPrototypes;
                 if (prototypes == null) continue;
 
-                for (int p = 0; p < prototypes.Length; p++)
+                for (var p = 0; p < prototypes.Length; p++)
                 {
                     var dp = prototypes[p];
                     var assetPath = $"{outputDir}/GrassProto_{t.name}_{p}.asset";
 
                     // Try to find existing asset or create new
-                    var data = AssetDatabase.LoadAssetAtPath<GrassPrototypeData>(assetPath);
+                    var data = AssetDatabase.LoadAssetAtPath<InstanceData>(assetPath);
                     if (data == null)
                     {
-                        data = CreateInstance<GrassPrototypeData>();
+                        data = CreateInstance<InstanceData>();
                         AssetDatabase.CreateAsset(data, assetPath);
                     }
 
                     // Fill from detail prototype
-                    data.isVertexLit       = dp.renderMode == DetailRenderMode.VertexLit;
-                    data.densityWidth      = td.detailWidth;
-                    data.densityHeight     = td.detailHeight;
+                    data.isVertexLit = dp.renderMode == DetailRenderMode.VertexLit;
+                    data.densityWidth = td.detailWidth;
+                    data.densityHeight = td.detailHeight;
                     data.terrainProtoIndex = p;
-                    data.minWidth          = dp.minWidth;
-                    data.maxWidth          = dp.maxWidth;
-                    data.minHeight         = dp.minHeight;
-                    data.maxHeight         = dp.maxHeight;
-                    data.noiseSpread       = dp.noiseSpread;
+                    data.minWidth = dp.minWidth;
+                    data.maxWidth = dp.maxWidth;
+                    data.minHeight = dp.minHeight;
+                    data.maxHeight = dp.maxHeight;
+                    data.noiseSpread = dp.noiseSpread;
 
                     // Mesh + material from prefab (VertexLit) or fallback
                     if (dp.usePrototypeMesh && dp.prototype != null)
                     {
                         var mf = dp.prototype.GetComponent<MeshFilter>();
                         var mr = dp.prototype.GetComponent<MeshRenderer>();
-                        data.mesh     = mf != null ? mf.sharedMesh : null;
+                        data.mesh = mf != null ? mf.sharedMesh : null;
                         data.material = mr != null ? mr.sharedMaterial : null;
                     }
                     else
                     {
-                        data.mesh     = null; // uses fallback quad
+                        data.mesh = null; // uses fallback quad
                         data.material = null; // uses fallback blade material
                     }
 
