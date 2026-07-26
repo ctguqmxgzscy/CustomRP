@@ -17,7 +17,7 @@ MonoBehaviour:
   scaleHeight: 8000
   mieG: 0.8
   mieScaleHeight: 1200
-  sunIntensity: 7
+  sunIntensity: 12
   sunDiskAngle: 1.5
   sunLightColor: {r: 1, g: 1, b: 1, a: 1}
   enableTerrainShadow: 1

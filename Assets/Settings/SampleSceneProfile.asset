@@ -83,7 +83,7 @@ MonoBehaviour:
     m_Value: 0.145
   rayMaxIterations:
     m_OverrideState: 1
-    m_Value: 257
+    m_Value: 64
   traceTowardsEye:
     m_OverrideState: 0
     m_Value: 0

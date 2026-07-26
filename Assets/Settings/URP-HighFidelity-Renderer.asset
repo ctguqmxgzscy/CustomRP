@@ -1,5 +1,21 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-3062604617741085062
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 045dac0c3dacc5b4d8ca83ed08ba3e38, type: 3}
+  m_Name: ScreenSpaceReflectionFeature
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  depthPyramidShader: {fileID: 7200000, guid: 4e937193c9d9f8242bee3542dcaaad3d, type: 3}
+  ssrShader: {fileID: 7200000, guid: 8b5e05c353ead1a45867fbb9d7646b4f, type: 3}
+  passEvent: 550
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -18,7 +34,8 @@ MonoBehaviour:
     hdrDebugViewPS: {fileID: 4800000, guid: 573620ae32aec764abd4d728906d2587, type: 3}
   m_RendererFeatures:
   - {fileID: 4919991806281139632}
-  m_RendererFeatureMap: 
+  - {fileID: -3062604617741085062}
+  m_RendererFeatureMap: b04538077b5247447a56129853717fd5
   m_UseNativeRenderPass: 0
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
@@ -62,7 +79,7 @@ MonoBehaviour:
     failOperation: 0
     zFailOperation: 0
   m_ShadowTransparentReceive: 1
-  m_RenderingMode: 0
+  m_RenderingMode: 1
   m_DepthPrimingMode: 1
   m_CopyDepthMode: 2
   m_AccurateGbufferNormals: 0
@@ -88,6 +105,8 @@ MonoBehaviour:
     type: 3}
   m_EnableAerialPerspective: 1
   m_AerialPerspectiveLutCompute: {fileID: 7200000, guid: 66b21484be364e34cab3452a63418324,
+    type: 3}
+  m_SHConvolutionCompute: {fileID: 7200000, guid: fa5417de1074203479093b29bd70d5b4,
     type: 3}
   m_AerialPerspectiveCompositeShader: {fileID: 4800000, guid: 26700f993838867448369a56cabb48a2,
     type: 3}
