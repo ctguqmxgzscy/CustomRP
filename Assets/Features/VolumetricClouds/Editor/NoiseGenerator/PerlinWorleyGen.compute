@@ -1,0 +1,155 @@
+// Perlin-Worley 基形生成（Nubis 公式）：
+//   pw = remap(perlin, 1 - worley, 1, 0, 1)
+// Perlin 用周期性实现（lattice mod N + gradient 环绕）→ 纹理边界无缝，
+// 频率 4/8/16 格/周期（pos 周期 = 1）。
+// Worley 用 27 邻域 + 环绕（与 NoiseGenCompute.compute 一致）。
+// 输出写入 Result 的 channelMask 指定通道，随后由 CSNormalize 归一化。
+
+#pragma kernel CSMain
+
+static const int numThreads = 8;
+
+uint resolution;
+RWTexture3D<float4> Result;
+float4 channelMask;
+
+StructuredBuffer<float3> points;
+int numCells;
+
+// ── 周期性 3D Perlin（Ken Perlin 经典实现，lattice 索引 mod period）──────
+static const int perm[256] = {
+    151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
+    140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,
+    247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,
+    57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,
+    74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,
+    60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,
+    65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,
+    200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,
+    52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,
+    207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,
+    119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+    129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,
+    218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,
+    81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,
+    184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,
+    222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
+};
+
+static const float3 grad3[12] = {
+    float3(1,1,0),  float3(-1,1,0),  float3(1,-1,0),  float3(-1,-1,0),
+    float3(1,0,1),  float3(-1,0,1),  float3(1,0,-1),  float3(-1,0,-1),
+    float3(0,1,1),  float3(0,-1,1),  float3(0,1,-1),  float3(0,-1,-1)
+};
+
+float periodicPerlin(float3 p, int period)
+{
+    int3 i = int3(floor(p));
+    float3 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f); // smoothstep
+
+    // 周期性 lattice：索引环绕到 [0, period)
+    int N = period;
+    int3 ix = ((i % N) + N) % N;
+
+    // 8 角 gradient 索引（perm 表 256 循环）
+    int g000 = perm[(ix.x + perm[(ix.y + perm[ix.z & 255]) & 255]) & 255] & 11;
+    int g100 = perm[(((ix.x + 1) % N) + perm[(ix.y + perm[ix.z & 255]) & 255]) & 255] & 11;
+    int g010 = perm[(ix.x + perm[(((ix.y + 1) % N) + perm[ix.z & 255]) & 255]) & 255] & 11;
+    int g110 = perm[(((ix.x + 1) % N) + perm[(((ix.y + 1) % N) + perm[ix.z & 255]) & 255]) & 255] & 11;
+    int g001 = perm[(ix.x + perm[(ix.y + perm[(ix.z + 1) % N & 255]) & 255]) & 255] & 11;
+    int g101 = perm[(((ix.x + 1) % N) + perm[(ix.y + perm[(ix.z + 1) % N & 255]) & 255]) & 255] & 11;
+    int g011 = perm[(ix.x + perm[(((ix.y + 1) % N) + perm[(ix.z + 1) % N & 255]) & 255]) & 255] & 11;
+    int g111 = perm[(((ix.x + 1) % N) + perm[(((ix.y + 1) % N) + perm[(ix.z + 1) % N & 255]) & 255]) & 255] & 11;
+
+    float n000 = dot(grad3[g000], p - float3(i.x, i.y, i.z));
+    float n100 = dot(grad3[g100], p - float3(i.x + 1, i.y, i.z));
+    float n010 = dot(grad3[g010], p - float3(i.x, i.y + 1, i.z));
+    float n110 = dot(grad3[g110], p - float3(i.x + 1, i.y + 1, i.z));
+    float n001 = dot(grad3[g001], p - float3(i.x, i.y, i.z + 1));
+    float n101 = dot(grad3[g101], p - float3(i.x + 1, i.y, i.z + 1));
+    float n011 = dot(grad3[g011], p - float3(i.x, i.y + 1, i.z + 1));
+    float n111 = dot(grad3[g111], p - float3(i.x + 1, i.y + 1, i.z + 1));
+
+    float nx00 = lerp(n000, n100, f.x);
+    float nx10 = lerp(n010, n110, f.x);
+    float nx01 = lerp(n001, n101, f.x);
+    float nx11 = lerp(n011, n111, f.x);
+    float nxy0 = lerp(nx00, nx10, f.y);
+    float nxy1 = lerp(nx01, nx11, f.y);
+    return lerp(nxy0, nxy1, f.z);
+}
+
+// ── Worley（27 邻域 + 环绕，与 NoiseGenCompute.compute 一致）─────────────
+static const int3 offsets[] =
+{
+    int3(0,0,0),
+    int3(0,0,1),  int3(-1,1,1), int3(-1,0,1), int3(-1,-1,1),
+    int3(0,1,1),  int3(0,-1,1), int3(1,1,1),  int3(1,0,1),  int3(1,-1,1),
+    int3(0,0,-1), int3(-1,1,-1), int3(-1,0,-1), int3(-1,-1,-1),
+    int3(0,1,-1), int3(0,-1,-1), int3(1,1,-1), int3(1,0,-1), int3(1,-1,-1),
+    int3(-1,1,0), int3(-1,0,0), int3(-1,-1,0),
+    int3(0,1,0),  int3(0,-1,0),
+    int3(1,1,0),  int3(1,0,0),  int3(1,-1,0)
+};
+
+float maxComponent(float3 vec) { return max(vec.x, max(vec.y, vec.z)); }
+float minComponent(float3 vec) { return min(vec.x, min(vec.y, vec.z)); }
+
+float worley(StructuredBuffer<float3> pts, int cells, float3 samplePos)
+{
+    samplePos = samplePos % 1;
+    int3 cellID = floor(samplePos * cells);
+    float minSqrDst = 1;
+
+    for (int o = 0; o < 27; o++)
+    {
+        int3 adjID = cellID + offsets[o];
+        if (minComponent(adjID) == -1 || maxComponent(adjID) == cells)
+        {
+            int3 wrappedID = (adjID + cells) % (uint3)cells;
+            int adjCellIndex = wrappedID.x + cells * (wrappedID.y + wrappedID.z * cells);
+            float3 wrappedPoint = pts[adjCellIndex];
+            for (int w = 0; w < 27; w++)
+            {
+                float3 sampleOffset = (samplePos - (wrappedPoint + offsets[w]));
+                minSqrDst = min(minSqrDst, dot(sampleOffset, sampleOffset));
+            }
+        }
+        else
+        {
+            int adjCellIndex = adjID.x + cells * (adjID.y + adjID.z * cells);
+            float3 sampleOffset = samplePos - pts[adjCellIndex];
+            minSqrDst = min(minSqrDst, dot(sampleOffset, sampleOffset));
+        }
+    }
+    return sqrt(minSqrDst);
+}
+
+float Remap(float v, float lo, float hi, float n0, float n1)
+{
+    return n0 + ((v - lo) / (hi - lo)) * (n1 - n0);
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────
+[numthreads(numThreads, numThreads, numThreads)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    float3 pos = id / (float)resolution;
+
+    // Perlin FBM：3 层，每层频率 = 周期格数（4/8/16），pos 周期恒为 1
+    float perlin = (periodicPerlin(pos * 4.0, 4) * 0.5 + 0.5)
+                 + (periodicPerlin(pos * 8.0, 8) * 0.5 + 0.5) * 0.5
+                 + (periodicPerlin(pos * 16.0, 16) * 0.5 + 0.5) * 0.25;
+    perlin /= 1.75;
+
+    // Worley 距离场归一化（距离 × 细胞数 ∈ [0, ~0.87]）
+    float w01 = saturate(worley(points, numCells, pos) * numCells);
+
+    // Perlin-Worley（Nubis）：remap(perlin, 1 - worley, 1, 0, 1)
+    // 细胞核附近（1-worley 低）perlin 被侵蚀成洞，间隙保留 perlin
+    float pw = Remap(perlin, saturate(1.0 - w01), 1.0, 0.0, 1.0);
+    pw = saturate(pw);
+
+    Result[id] = Result[id] * (1 - channelMask) + pw * channelMask;
+}

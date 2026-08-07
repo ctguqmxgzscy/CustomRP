@@ -1,0 +1,21 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 912b291f632f57f4a88d4de6f15c249a, type: 3}
+  m_Name: SSSSProfile_Skin
+  m_EditorClassIdentifier: 
+  mainColor: {r: 1, g: 0.31, b: 0.2, a: 1}
+  falloff: {r: 1, g: 0.51, b: 0.29, a: 1}
+  scatterScale: 1
+  useDualScale: 1
+  nearScatterScale: 3.26
+  farScatterScale: 4.85
+  nearFarBalance: 0.684

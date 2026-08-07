@@ -12,11 +12,13 @@ Texture2D<float4> _OpticalDepthLUT;
 SamplerState sampler_OpticalDepthLUT;
 Texture2D<float4> _MultiScatteringLUT;
 SamplerState sampler_MultiScatteringLUT;
+float _EnableMultiScattering;
 
 // Atmosphere.hlsl declares its own globals (_PlanetRadius, etc.) and
 // includes Scattering.hlsl (phase functions, ray-sphere intersect).
 #define ATM_SUN_DISK
 #define ATM_MULTI_SCATTERING
+#define ATM_UNIFORM_SCATTERING
 #include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
 
 // URP shadow sampling requires CommonMaterial.hlsl for LerpWhiteTo
@@ -97,7 +99,9 @@ void IntegrateScatteredLuminance(
         float3 T_sun        = GetTransmittanceToSun(height, cosSunZenith);
 
         float3 J = EvaluateInScattering(height, cosTheta, _MieG);
-        float3 ms = GetMultiScattering(height, cosSunZenith);
+        float3 ms = float3(0, 0, 0);
+        if (_EnableMultiScattering)
+            ms = GetMultiScattering(height, cosSunZenith);
 
         // Planet sphere occlusion
         float tEarth     = RaySphereIntersectNearest(P, sunDir,

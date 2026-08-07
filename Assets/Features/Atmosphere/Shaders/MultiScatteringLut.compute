@@ -39,6 +39,7 @@ SamplerState sampler_OpticalDepthLUT;
 
 RW_TEXTURE2D_X(float4, _MultiScatteringLUT);
 
+#define ATM_UNIFORM_SCATTERING
 
 #include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
 

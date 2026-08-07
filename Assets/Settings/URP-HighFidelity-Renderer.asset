@@ -33,9 +33,11 @@ MonoBehaviour:
       type: 3}
     hdrDebugViewPS: {fileID: 4800000, guid: 573620ae32aec764abd4d728906d2587, type: 3}
   m_RendererFeatures:
+  - {fileID: 1364203760238533967}
   - {fileID: 4919991806281139632}
   - {fileID: -3062604617741085062}
-  m_RendererFeatureMap: b04538077b5247447a56129853717fd5
+  - {fileID: 4710321385323683246}
+  m_RendererFeatureMap: 4f1d459217a0ee12b04538077b5247447a56129853717fd5aedd24f6576c5e41
   m_UseNativeRenderPass: 0
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
@@ -79,11 +81,80 @@ MonoBehaviour:
     failOperation: 0
     zFailOperation: 0
   m_ShadowTransparentReceive: 1
-  m_RenderingMode: 1
+  m_RenderingMode: 0
   m_DepthPrimingMode: 1
   m_CopyDepthMode: 2
   m_AccurateGbufferNormals: 0
   m_IntermediateTextureMode: 1
+--- !u!114 &1364203760238533967
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dd20a08b9ce79c74da475b08cc159234, type: 3}
+  m_Name: VolumetricCloudFeature
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  m_CloudRayMarchCompute: {fileID: 7200000, guid: 3ab1cbb1fb9f4dc1b4174b78a23da03d,
+    type: 3}
+  m_CompositeShader: {fileID: 4800000, guid: b94f90cd63148a443836d8ce17a7a5d6, type: 3}
+  m_AtmosphereSettings: {fileID: 11400000, guid: 4bf75685286fc0e42a2e00d980a338ae,
+    type: 2}
+  m_SunColor: {r: 1, g: 1, b: 1, a: 1}
+  m_SunIntensity: 1.97
+  m_PlanetRadius: 6371000
+  m_CloudHeightMin: 1500
+  m_CloudHeightMax: 4500
+  m_CloudDensityScale: 1
+  m_StratusRange: {x: 0.1263247, y: 0.4762875}
+  m_StratusFeather: 0.336
+  m_CumulusRange: {x: 0.1422567, y: 1}
+  m_CumulusFeather: 0.345
+  m_ShapeNoiseTex: {fileID: 11700000, guid: 4c490728414f93740bd01e7b6aae1ad0, type: 2}
+  m_DetailNoiseTex: {fileID: 11700000, guid: 643c271892cec5a49b8b1e0ddc4dac92, type: 2}
+  m_WeatherMapTex: {fileID: 2800000, guid: 9ea511be9ac9f554da0d1efa48d8d0c0, type: 3}
+  m_WeatherMapScale: 11
+  m_CloudDensityAdjust: 0.5
+  m_AbsorptionStrength: 3
+  m_WindDirection: {x: 0.1376577, y: -0.1567618, z: 0.977996}
+  m_WindSpeed: 1
+  m_ShapeNoiseScale: 1.37
+  m_DetailNoiseScale: 2
+  m_BaseShapeDetailEffect: 0.5
+  m_DetailEffect: 0.158
+  m_ShapeStepCount: 64
+  m_LightStepCount: 8
+  m_ExtinctionCoeff: 0.005
+  m_ScatterCoeff: 0.004
+  m_MieForwardScatter: 0.5
+  m_MieG: 0.7
+  m_MieG2: -0.2
+  m_MieBackScatter: 0.5
+--- !u!114 &4710321385323683246
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 85499b004b0df614e911d11db394a684, type: 3}
+  m_Name: SSSSPassFeature
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  sssShader: {fileID: 4800000, guid: e281349574bf0bf41baab3079d6f40a8, type: 3}
+  settings:
+    scaler: 1
+    sssLayerMask:
+      serializedVersion: 2
+      m_Bits: 4294967295
+    profileSet: {fileID: 11400000, guid: f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0, type: 2}
+  renderPassEvent: 350
 --- !u!114 &4919991806281139632
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -19,9 +19,9 @@ MonoBehaviour:
   instanceCount: 1101
   densityMultiplier: 0.084
   minWidth: 4
-  maxWidth: 8
+  maxWidth: 6
   minHeight: 4
-  maxHeight: 8
+  maxHeight: 12
   noiseSpread: 0.1
   isVertexLit: 1
   terrainProtoIndex: 1

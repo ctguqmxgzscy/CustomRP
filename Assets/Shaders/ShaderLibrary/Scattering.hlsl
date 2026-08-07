@@ -2,6 +2,13 @@
 #define SCATTERING_INCLUDED
 
 
+#ifdef ATM_UNIFORM_SCATTERING
+// ── Uniform overrides (set by AtmosphereSkyboxLutFeature) ──────────
+float3 _RayleighScattering;
+float3 _MieScattering;
+#define kRayleighScattering _RayleighScattering
+#define kMieScattering _MieScattering
+#else
 // ── Rayleigh Scattering Coefficient at Sea Level ─────────────────────
 // β_R⁰(λ) = 8π³(n²-1)² · F_K / (3Nλ⁴)
 //
@@ -25,6 +32,7 @@ static const float3 kRayleighScattering = float3(5.8e-6, 1.35e-5, 3.31e-5); // R
 //
 // Altitude: β_M(h) = kMieScattering · exp(-h / H_M),  H_M ≈ 1.2 km.
 static const float3 kMieScattering = float3(3.99e-6, 3.99e-6, 3.99e-6); // R, G, B [m⁻¹]
+#endif
 
 // ── Ozone Absorption (Chappuis band) ─────────────────────────────────────
 // Ozone absorbs green-yellow light (500–650 nm), reddening sunsets.

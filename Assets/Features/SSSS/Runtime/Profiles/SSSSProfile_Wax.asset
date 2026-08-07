@@ -1,0 +1,21 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 912b291f632f57f4a88d4de6f15c249a, type: 3}
+  m_Name: SSSSProfile_Wax
+  m_EditorClassIdentifier: 
+  mainColor: {r: 1, g: 0.82, b: 0.7, a: 1}
+  falloff: {r: 1, g: 0.78, b: 0.63, a: 1}
+  scatterScale: 1.7
+  useDualScale: 0
+  nearScatterScale: 0.5
+  farScatterScale: 2
+  nearFarBalance: 0.5

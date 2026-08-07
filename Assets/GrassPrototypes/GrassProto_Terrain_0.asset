@@ -16,13 +16,13 @@ MonoBehaviour:
   material: {fileID: 2100000, guid: 2151cc9275fadbd4aad0cd9a9cc034dc, type: 2}
   mats: []
   subMeshIndex: 0
-  instanceCount: 13377
-  densityMultiplier: 0.151
+  instanceCount: 6731
+  densityMultiplier: 0.076
   minWidth: 4
   maxWidth: 8
   minHeight: 4
-  maxHeight: 8
-  noiseSpread: 0.213
+  maxHeight: 12
+  noiseSpread: 0.249
   isVertexLit: 1
   terrainProtoIndex: 0
   densityWidth: 1024

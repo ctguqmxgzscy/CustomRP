@@ -18,6 +18,7 @@
 
 #define ATM_SUN_DISK
 #define ATM_MULTI_SCATTERING
+#define ATM_UNIFORM_SCATTERING
 
 // ── Input textures ──────────────────────────────────────────────────────
 Texture2D<float4> _OpticalDepthLUT;
@@ -31,6 +32,8 @@ float4x4 _InvCameraViewMatrix;
 
 // ── Output ──────────────────────────────────────────────────────────────
 RWTexture3D<float4> _AerialPerspectiveLUT;
+
+float _EnableMultiScattering;
 
 #include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
 
@@ -140,7 +143,9 @@ void ComputeAerialPerspectiveLUT(uint3 id : SV_DispatchThreadID)
         float3 T_sun = GetTransmittanceToSun(height, cosSunZenith);
 
         float3 J = EvaluateInScattering(height, cosTheta, _MieG);
-        float3 ms = GetMultiScattering(height, cosSunZenith);
+        float3 ms = float3(0, 0, 0);
+        if (_EnableMultiScattering)
+            ms = GetMultiScattering(height, cosSunZenith);
 
         // Earth shadow: for underground samples, project to the planet surface
         // (nudged outward to avoid self-intersection) and check shadow there.

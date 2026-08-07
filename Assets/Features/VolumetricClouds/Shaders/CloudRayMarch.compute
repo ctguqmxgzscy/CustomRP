@@ -1,0 +1,131 @@
+// Cloud Ray Marching — Compute Shader
+// Nubis 风格 2.5D 体积云：全屏 dispatch，沿视线对球壳云层做深度 marching。
+// 每个像素：重建射线 → 云层相交 → 形状采样 → Beer-Lambert 光照 → 输出散射色 + 不透明度。
+//
+// 输入: _CameraDepthTexture（深度提前退出）
+// 输出: _CloudTarget (RWTexture2D, RGBA: RGB=散射色, A=云不透明度)
+
+#pragma enable_d3d11_debug_symbols
+#pragma only_renderers d3d11 vulkan metal
+#pragma kernel CSMain
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+#include "Assets/Features/VolumetricClouds/Shaders/CloudLighting.hlsl"
+
+// ── 输入参数（由 C# RenderFeature 每帧 SetGlobal 填充）───────────────────
+RWTexture2D<float4> _CloudTarget;
+
+// ── Main Kernel ──────────────────────────────────────────────────────────
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    // UV 保持官方约定（v=0 底部）；GetViewDir/ComputeWorldSpacePosition 内部各自按
+    // UNITY_UV_STARTS_AT_TOP 处理翻转，这里不要动 uv
+    float2 uv = (float2(id.xy) + 0.5) / _ScreenParams.xy;
+
+    // Load 整数坐标（全屏 compute 不需要插值）；反 Z 平台深度值即 clip z，GL 需转 -1..1
+    float rawDepth = LoadSceneDepth(id.xy);
+    // far 深度（无几何，如天空/行星球背面剔除）——不参与深度裁剪，
+    // 否则相机在球内时 sceneDist（far 平面）远小于云层距离（r 量级）→ 云全被裁掉
+    bool isFar = UNITY_REVERSED_Z ? rawDepth < 1e-5 : rawDepth > 1.0 - 1e-5;
+    #if !UNITY_REVERSED_Z
+    rawDepth = lerp(UNITY_NEAR_CLIP_VALUE, 1.0, rawDepth);
+    #endif
+
+    // 相机在世界坐标（世界 y = 海拔）；行星中心跟随相机水平位置（精度方案：
+    // 相交在球坐标算 t（r 量级），密度采样在世界坐标（海拔小量，float32 高精度））
+    float3 position = _WorldSpaceCameraPos;
+    float3 viewDir = GetViewDir(uv, position);
+    float3 sphereCenter = float3(position.x, -_PlanetRadius, position.z);
+
+    RayMarchInfo info = GetRayMarchInfo();
+    info.planetCenter = sphereCenter;
+
+
+    // 云层相交（CloudCommon.hlsl）——返回 (到云层距离, 云层内厚度)
+    float2 cloudDst = RayCloudLayerDst(sphereCenter, _PlanetRadius, _CloudHeightMin, _CloudHeightMax,
+                                       position, viewDir, true);
+    if (cloudDst.y <= 0)
+    {
+        _CloudTarget[id.xy] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    float dstToCloud = cloudDst.x;
+    float endPos = dstToCloud + cloudDst.y; // 出云点
+
+    // 深度提前退出：云被不透明几何遮挡的部分直接跳过
+    // eye depth 是视线方向投影距离 ≠ 射线 t，边缘像素偏差 1/cosθ，需重建世界位置算真实距离
+    float tExit = endPos;
+    if (!isFar)
+    {
+        float3 scenePosWS = ComputeWorldSpacePosition(uv, rawDepth, UNITY_MATRIX_I_VP);
+        float sceneDist = distance(scenePosWS, position); // 与 march 的 t 同参考系
+        tExit = min(tExit, sceneDist);
+    }
+
+    if (tExit <= dstToCloud)
+    {
+        _CloudTarget[id.xy] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    //获取灯光信息
+    Light mainLight = GetMainLight();
+    float3 lightDir = normalize(mainLight.direction);
+
+    // compute 中必须用 _LOD（SampleLevel）——SAMPLE_TEXTURE2D 的 Sample() 依赖自动 mip，cs_5_0 无法映射
+    float IGN = InterleavedGradientNoise(id.xy, _FrameCount);
+    float ds = (tExit - dstToCloud) / _ShapeStepCount;
+    position = position + (dstToCloud + 0.5 * ds * IGN) * viewDir;
+
+    float cosTheta = dot(viewDir, lightDir);
+    // 双 HG 相位（Nubis 2017，CloudLighting.hlsl）：前向 _MieG 强峰 + 后向 _MieG2 背向峰，Max 混合
+    float phase = HGScatterMax(cosTheta, _MieG, _MieForwardScatter, _MieG2, _MieBackScatter);
+
+    float3 color = float3(0, 0, 0);
+    float tau_PA = 0;
+    // ── 形状 march ──────────────────────────────────────────────────
+    for (int i = 0; i < (int)_ShapeStepCount; i++)
+    {
+        float3 posWS = position + viewDir * (i + 0.5) * ds;
+        CloudInfo cloudInfo = SampleCloudDensity(posWS, info);
+
+        float absorption = cloudInfo.absorptivity;
+        float density = cloudInfo.density;
+
+        if (density > 0.0)
+        {
+            // 降雨吸收：放大消光（散射不变 → 云更暗），吸收率来自天气图 G 通道
+            float extinction = _ExtinctionCoeff * lerp(1.0, _AbsorptionStrength, absorption);
+            tau_PA += extinction * density * ds;
+            float T_PA = exp(-tau_PA);
+
+            float3 J = EvaluateCloudInScattering(density, _ScatterCoeff, phase);
+
+            float2 lightDst = RayCloudLayerDst(sphereCenter, _PlanetRadius, _CloudHeightMin, _CloudHeightMax, posWS,
+                                               lightDir, false);
+            // T_CP = 大气段透射（查 _OpticalDepthLUT，与大气共享预设）× 云段透射（light march）
+            float3 T_CP = EvaluateAtmosphereTransmittance(posWS, sphereCenter, lightDir);
+            if (lightDst.y > 0)
+            {
+                float lightStepSize = lightDst.y / _LightStepCount;
+                float tau_CP = 0;
+                for (int j = 0; j < (int)_LightStepCount; j++)
+                {
+                    float3 lightPosWS = posWS + lightDir * (j + 0.5) * lightStepSize;
+                    tau_CP += _ExtinctionCoeff * SampleCloudDensity(lightPosWS, info).density * lightStepSize;
+                }
+                T_CP *= exp(-tau_CP);
+            }
+
+            color += _SunIntensity * _SunColor * (T_PA * J) * T_CP * ds;
+            if (T_PA <= 0.01)
+            {
+                break;
+            }
+        }
+    }
+
+    _CloudTarget[id.xy] = float4(color, 1.0 - exp(-tau_PA));
+}

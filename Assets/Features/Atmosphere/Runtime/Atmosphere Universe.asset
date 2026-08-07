@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 806efd3bd43b49f41bd56e0021f2b3be, type: 3}
+  m_Name: Atmosphere Universe
+  m_EditorClassIdentifier: 
+  planetRadius: 1000000
+  atmosphereHeight: 1000
+  scaleHeight: 8000
+  rayleighScatteringColor: {r: 0.175, g: 0.408, b: 1, a: 1}
+  rayleighScatteringScale: 0.0000331
+  mieG: 0.8
+  mieScaleHeight: 1
+  mieScatteringColor: {r: 1, g: 1, b: 1, a: 1}
+  mieScatteringScale: 0.00000399
+  sunIntensity: 6.7
+  sunDiskAngle: 1.5
+  sunLightColor: {r: 1, g: 1, b: 1, a: 1}
+  enableTerrainShadow: 1
+  enableMultiScattering: 1
+  apIntensity: 10
+  viewSamples: 64
+  lightSamples: 32

@@ -35,9 +35,12 @@ SamplerState sampler_MultiScatteringLUT;
 
 RW_TEXTURE2D_X(float4, _SkyViewLut);
 
+float _EnableMultiScattering;
+
 
 #define ATM_SUN_DISK
 #define ATM_MULTI_SCATTERING
+#define ATM_UNIFORM_SCATTERING
 #include "Assets/Shaders/ShaderLibrary/Atmosphere.hlsl"
 
 // ── Main Kernel ──────────────────────────────────────────────────────────
@@ -78,15 +81,15 @@ void ComputeSkyViewLut(uint3 id : SV_DispatchThreadID)
         float3 P = rayOrigin + viewDirWS * (time + ds * 0.5);
         float height = distance(planetCenter, P) - _PlanetRadius;
 
-        // In-scattering source at P
-        float3 J = EvaluateInScattering(height, _ScaleHeight, scaleHeightM, cosTheta, _MieG);
-
         // PA transmittance
         tauPA_R += exp(-height / _ScaleHeight) * ds;
         tauPA_M += exp(-height / scaleHeightM) * ds;
         tauPA_O += GetOzoneDensity(height) * ds;
         float3 T_PA = exp(-kRayleighScattering * tauPA_R - kMieScattering * tauPA_M
-                          - kOzoneAbsorption * tauPA_O);
+            - kOzoneAbsorption * tauPA_O);
+
+        // In-scattering source at P
+        float3 J = EvaluateInScattering(height, _ScaleHeight, scaleHeightM, cosTheta, _MieG);
 
         // CP transmittance — with Bruneton horizon smoothstep
         float cosSunZenith = dot(normalize(P - planetCenter), sunDir);
@@ -95,10 +98,13 @@ void ComputeSkyViewLut(uint3 id : SV_DispatchThreadID)
         // Multi-scattering (Hillaire 2020 closed-form)
         // Does NOT multiply by T_CP — LUT already accounts for sun transmittance
         // from all directions arriving at P.
-        float3 msContrib = GetMultiScattering(P, sunDir);
+        float3 msContrib = float3(0, 0, 0);
+        if (_EnableMultiScattering)
+            msContrib = GetMultiScattering(P, sunDir);
 
         // Single scattering
         scatter += _SunIntensity * _SunLightColor * (J * T_CP + msContrib) * T_PA * ds;
+        // scatter += _SunIntensity * _SunLightColor * (msContrib) * T_PA * ds;
         time += ds;
     }
 

@@ -179,6 +179,15 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
         private static readonly int s_MultiScatteringLutId =
             Shader.PropertyToID("_MultiScatteringLUT");
 
+        private static readonly int s_EnableMultiScatteringId =
+            Shader.PropertyToID("_EnableMultiScattering");
+
+        private static readonly int s_RayleighScatteringId =
+            Shader.PropertyToID("_RayleighScattering");
+
+        private static readonly int s_MieScatteringId =
+            Shader.PropertyToID("_MieScattering");
+
         private static readonly int s_AerialPerspectiveLutId =
             Shader.PropertyToID("_AerialPerspectiveLUT");
 
@@ -321,6 +330,12 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             else
                 sunDir = Shader.GetGlobalVector("_MainLightPosition").normalized;
 
+            // ── Sea-level scattering coefficients (normalized color × scale) ─
+            var rayleighScattering = (Vector4)(settings.rayleighScatteringColor * settings.rayleighScatteringScale);
+            var mieScattering = (Vector4)(settings.mieScatteringColor * settings.mieScatteringScale);
+            cmd.SetGlobalVector(s_RayleighScatteringId, rayleighScattering);
+            cmd.SetGlobalVector(s_MieScatteringId, mieScattering);
+
             // ══════════════════════════════════════════════════════════════
             // 1. Generate Optical Depth LUT
             // ══════════════════════════════════════════════════════════════
@@ -339,7 +354,7 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
             // ══════════════════════════════════════════════════════════════
             // 2. Generate Multi-Scattering LUT
             // ══════════════════════════════════════════════════════════════
-            if (multiScatteringLutCompute != null)
+            if (multiScatteringLutCompute != null && settings.enableMultiScattering)
             {
                 var mulSC = multiScatteringLutCompute;
                 cmd.SetComputeFloatParam(mulSC, s_PlanetRadiusId, planetRadius);
@@ -355,6 +370,8 @@ public class AtmosphereSkyboxLutFeature : ScriptableRendererFeature
                 var tgMS = Mathf.CeilToInt(k_MultiScatteringLutSize / 4f);
                 cmd.DispatchCompute(mulSC, m_MultiScatteringKernel, tgMS, tgMS, 1);
             }
+
+            cmd.SetGlobalFloat(s_EnableMultiScatteringId, settings.enableMultiScattering ? 1.0f : 0.0f);
 
             // ══════════════════════════════════════════════════════════════
             // 3. Generate Sky View LUT

@@ -45,7 +45,7 @@ Material:
     - _GrassWater: 0.4
     - _NormalScale: 1
     - _SSSIntensity: 1.5
-    - _SSSRadius: 0.7
+    - _SSSRadius: 0.438
     - _SpecularSmoothness: 0.5
     - _TransExp: 2
     - _TransIntensity: 5

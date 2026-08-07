@@ -20,6 +20,12 @@ public class AtmosphereSettings : ScriptableObject
     [Tooltip("Scale height for Rayleigh (km for Earth = 8.0).")]
     public float scaleHeight = 8000f;
 
+    [Tooltip("Normalized Rayleigh scattering color at sea level. R=680nm, G=550nm, B=440nm.\nPhysical coefficient = color.rgb × rayleighScatteringScale [m⁻¹].")]
+    public Color rayleighScatteringColor = new Color(0.175f, 0.408f, 1.0f);
+
+    [Tooltip("Magnitude multiplier for Rayleigh scattering. 3.31e-5 = Earth sea level.")]
+    public float rayleighScatteringScale = 3.31e-5f;
+
     [Header("Mie Scattering")]
     [Tooltip("Mie asymmetry parameter. g>0 = forward scatter (haze).")]
     [Range(-1f, 1f)]
@@ -27,6 +33,12 @@ public class AtmosphereSettings : ScriptableObject
 
     [Tooltip("Scale height for Mie/aerosol (km for Earth = 1.2).")]
     public float mieScaleHeight = 1200f;
+
+    [Tooltip("Normalized Mie scattering color at sea level. Wavelength-independent for haze particles.\nPhysical coefficient = color.rgb × mieScatteringScale [m⁻¹].")]
+    public Color mieScatteringColor = Color.white;
+
+    [Tooltip("Magnitude multiplier for Mie scattering. 3.99e-6 = Earth sea level.")]
+    public float mieScatteringScale = 3.99e-6f;
 
     [Header("Sun")]
     [Tooltip("Sun light intensity multiplier.")]
@@ -43,8 +55,11 @@ public class AtmosphereSettings : ScriptableObject
     [Tooltip("Enable per-pixel ray-march with URP shadowmap for terrain occlusion.")]
     public bool enableTerrainShadow = false;
 
+    [Tooltip("Enable Hillaire 2020 multi-scattering approximation (boosts haze brightness at all view angles).")]
+    public bool enableMultiScattering = true;
+
     [Tooltip("Multiplier for aerial perspective inscattered light. 1 = physically correct, >1 = stronger haze.")]
-    [Range(0f, 10f)]
+    [Range(0f, 20f)]
     public float apIntensity = 1.0f;
 
     [Header("Quality")]
