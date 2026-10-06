@@ -75,3 +75,7 @@ Assets/Features/Atmosphere/atmospheric-scattering-reference.md
 Assets/Features/Atmosphere/atmospheric-scattering-reference.md.meta
 Assets/Features/Atmosphere/multi-scattering-plan.md
 Assets/Features/Atmosphere/multi-scattering-plan.md.meta
+
+# Third-party terrain demo (3.9 GB, exceeds GitHub pack/file limits) - local only
+Assets/TerrainDemoScene_URP/
+Assets/TerrainDemoScene_URP.meta
