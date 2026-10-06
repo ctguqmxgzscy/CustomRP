@@ -79,3 +79,31 @@ Assets/Features/Atmosphere/multi-scattering-plan.md.meta
 # Third-party terrain demo (3.9 GB, exceeds GitHub pack/file limits) - local only
 Assets/TerrainDemoScene_URP/
 Assets/TerrainDemoScene_URP.meta
+
+# Paid Asset Store packages - not redistributed, kept on disk only
+Assets/Forst/
+Assets/Forst.meta
+Assets/GPUInstancerPro/
+Assets/GPUInstancerPro.meta
+Packages/com.gurbu.gpui-pro/
+Packages/com.gurbu.gpui-pro.prefab/
+Packages/com.gurbu.gpui-pro.terrain/
+Assets/Resources/Textures/Woman/
+Assets/Resources/Textures/Woman.meta
+Assets/Resources/Textures/ShaderBall/
+Assets/Resources/Textures/ShaderBall.meta
+Assets/Resources/Textures/Perseus/
+Assets/Resources/Textures/Perseus.meta
+Assets/Resources/Textures/Cherub/
+Assets/Resources/Textures/Cherub.meta
+Assets/Resources/Textures/Rossbaendiger/
+Assets/Resources/Textures/Rossbaendiger.meta
+Assets/Resources/Textures/Dragon/
+Assets/Resources/Textures/Dragon.meta
+Assets/Resources/Model/DemoPack/
+Assets/Resources/Model/DemoPack.meta
+Assets/Resources/Model/Environment/Dragon With Pearl.fbx
+Assets/Resources/Model/Environment/Dragon With Pearl.fbx.meta
+
+# Editor crash replay logs
+replay_pid*.log
