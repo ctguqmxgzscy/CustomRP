@@ -17,15 +17,15 @@ MonoBehaviour:
   scaleHeight: 8000
   rayleighScatteringColor: {r: 0.175, g: 0.408, b: 1, a: 1}
   rayleighScatteringScale: 0.0000331
-  mieG: 0.8
+  mieG: 0.75
   mieScaleHeight: 1200
   mieScatteringColor: {r: 1, g: 1, b: 1, a: 1}
   mieScatteringScale: 0.00000399
-  sunIntensity: 15
+  sunIntensity: 5
   sunDiskAngle: 1.5
   sunLightColor: {r: 1, g: 1, b: 1, a: 1}
   enableTerrainShadow: 1
   enableMultiScattering: 1
   apIntensity: 10
   viewSamples: 64
-  lightSamples: 32
+  lightSamples: 8

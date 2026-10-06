@@ -17,7 +17,7 @@ MonoBehaviour:
   scaleHeight: 8000
   rayleighScatteringColor: {r: 0.175, g: 0.408, b: 1, a: 1}
   rayleighScatteringScale: 0.0000331
-  mieG: 0.8
+  mieG: -0.528
   mieScaleHeight: 1
   mieScatteringColor: {r: 1, g: 1, b: 1, a: 1}
   mieScatteringScale: 0.00000399

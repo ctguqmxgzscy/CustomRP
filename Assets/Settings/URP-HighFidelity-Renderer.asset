@@ -99,41 +99,60 @@ MonoBehaviour:
   m_Name: VolumetricCloudFeature
   m_EditorClassIdentifier: 
   m_Active: 1
-  m_CloudRayMarchCompute: {fileID: 7200000, guid: 3ab1cbb1fb9f4dc1b4174b78a23da03d,
+  m_CloudRayMarchCompute: {fileID: 7200000, guid: 1f7ece7bb8794db28347fd811d86cfce,
     type: 3}
   m_CompositeShader: {fileID: 4800000, guid: b94f90cd63148a443836d8ce17a7a5d6, type: 3}
+  m_RenderMode: 0
+  m_FragmentShader: {fileID: 4800000, guid: bf0a7c21aa68fca44bfb8f3dee1261ec, type: 3}
+  m_TimeSlicing: 1
+  m_InterleaveSize: 4
+  m_RotationAdaptive: 1
+  m_FastRotationThreshold: 1.5
+  m_RotationThreshold: 0.5
+  m_ReprojEdgeThreshold: 0.05
+  m_DebugSlice: 0
   m_AtmosphereSettings: {fileID: 11400000, guid: 4bf75685286fc0e42a2e00d980a338ae,
     type: 2}
   m_SunColor: {r: 1, g: 1, b: 1, a: 1}
-  m_SunIntensity: 1.97
-  m_PlanetRadius: 6371000
-  m_CloudHeightMin: 1500
-  m_CloudHeightMax: 4500
+  m_SunIntensity: 0
+  m_CloudBaseColor: {r: 0.72, g: 0.75, b: 0.78, a: 1}
+  m_CloudTopColor: {r: 0.95, g: 0.95, b: 1, a: 1}
+  m_AmbientLightFactor: 0.8
+  m_LightingMode: 1
+  m_PlanetRadius: 6360000
+  m_CloudHeightMin: 1000
+  m_CloudHeightMax: 7000
   m_CloudDensityScale: 1
-  m_StratusRange: {x: 0.1263247, y: 0.4762875}
-  m_StratusFeather: 0.336
-  m_CumulusRange: {x: 0.1422567, y: 1}
-  m_CumulusFeather: 0.345
-  m_ShapeNoiseTex: {fileID: 11700000, guid: 4c490728414f93740bd01e7b6aae1ad0, type: 2}
-  m_DetailNoiseTex: {fileID: 11700000, guid: 643c271892cec5a49b8b1e0ddc4dac92, type: 2}
+  m_StratusRange: {x: 0.12, y: 0.4}
+  m_StratusFeather: 0.2
+  m_CumulusRange: {x: 0.14, y: 1}
+  m_CumulusFeather: 0.25
+  m_ShapeNoiseTex: {fileID: 11700000, guid: 5e91331482668fc429186fb10ca1e1ec, type: 2}
+  m_DetailNoiseTex: {fileID: 11700000, guid: 97389a0bd543a7d4f9f01d6d50a5d50a, type: 2}
   m_WeatherMapTex: {fileID: 2800000, guid: 9ea511be9ac9f554da0d1efa48d8d0c0, type: 3}
-  m_WeatherMapScale: 11
-  m_CloudDensityAdjust: 0.5
-  m_AbsorptionStrength: 3
+  m_WeatherMapScale: 10
+  m_CloudDensityAdjust: 0.949
+  m_Coverage: 0.333
+  m_AbsorptionStrength: 6.62
   m_WindDirection: {x: 0.1376577, y: -0.1567618, z: 0.977996}
   m_WindSpeed: 1
-  m_ShapeNoiseScale: 1.37
-  m_DetailNoiseScale: 2
-  m_BaseShapeDetailEffect: 0.5
-  m_DetailEffect: 0.158
+  m_ShapeNoiseScale: 0.21
+  m_DetailNoiseScale: 0.6
+  m_BaseShapeDetailEffect: 0.623
+  m_DetailEffect: 0.4
   m_ShapeStepCount: 64
-  m_LightStepCount: 8
-  m_ExtinctionCoeff: 0.005
+  m_ExtinctionCoeff: 0.0024
   m_ScatterCoeff: 0.004
-  m_MieForwardScatter: 0.5
-  m_MieG: 0.7
-  m_MieG2: -0.2
-  m_MieBackScatter: 0.5
+  m_Density: 3.5
+  m_MieG: 0.439
+  m_MieGBackward: 0.613
+  m_SilverIntensity: 1
+  m_SilverSpread: 0.5
+  m_MSAttenuation: 0.8
+  m_MSContribution: 0.497
+  m_MSEccentricity: 0.2
+  m_LightStepLength: 400
+  m_LightConeRadius: 0.3
 --- !u!114 &4710321385323683246
 MonoBehaviour:
   m_ObjectHideFlags: 0
