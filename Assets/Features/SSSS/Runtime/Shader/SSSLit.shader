@@ -191,6 +191,7 @@ Shader "Custom/SSSLit"
                 inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(input.positionCS);
                 inputData.shadowCoord = TransformWorldToShadowCoord(inputData.positionWS);
                 Light light = GetMainLight(inputData.shadowCoord, input.positionWS, half4(1, 1, 1, 1));
+                ApplyHighQualityShadow(light, input.positionWS);
 
                 #if defined(_NORMALMAP)
                 float3 N = GetNormal(input.uv, input.normalWS, input.tangentWS);

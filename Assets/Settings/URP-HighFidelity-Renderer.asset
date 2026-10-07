@@ -37,7 +37,8 @@ MonoBehaviour:
   - {fileID: 4919991806281139632}
   - {fileID: -3062604617741085062}
   - {fileID: 4710321385323683246}
-  m_RendererFeatureMap: 4f1d459217a0ee12b04538077b5247447a56129853717fd5aedd24f6576c5e41
+  - {fileID: 6341829374610283947}
+  m_RendererFeatureMap: 4f1d459217a0ee12b04538077b5247447a56129853717fd5aedd24f6576c5e41ab9dc83b37b40258
   m_UseNativeRenderPass: 0
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
@@ -205,6 +206,29 @@ MonoBehaviour:
   m_DebugSliceZ: 0
   m_DebugOverlayShader: {fileID: 4800000, guid: fee5c3d224e3a594480bb52fcaeecd76,
     type: 3}
+--- !u!114 &6341829374610283947
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cd3fbc9275c7d6c4eba44363904a99a2, type: 3}
+  m_Name: HighQualityShadowFeature
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  settings:
+    resolution: 1024
+    casterLayers:
+      serializedVersion: 2
+      m_Bits: 4294967295
+    frustumFit: 1
+    boundsPadding: 0.05
+    edgeFade: 0.08
+    depthBias: 0.005
+    debugLog: 1
 --- !u!114 &7858366752850281287
 MonoBehaviour:
   m_ObjectHideFlags: 0
